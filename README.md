@@ -29,6 +29,7 @@ Este script automatiza o monitoramento da página de lista de espera no sistema 
 **Descrição**:  
 Este é o script principal que contém o código responsável por realizar a verificação e execução de tarefas automáticas. Ele lida com a interação com os elementos da página, como encontrar o botão "EC" e verificar se o texto "RECEPÇÃO" está presente, além de realizar o acionamento do alerta de voz quando necessário.
 
+
 ---
 
 ### **iniciar_explica.py**
