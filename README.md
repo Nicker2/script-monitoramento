@@ -1,7 +1,3 @@
-Aqui está o seu `README.md` atualizado com as descrições que você solicitou e incluindo sua autoria no final:
-
----
-
 # Monitoramento de Senha no Feegow
 
 Script em Python que usa Selenium para monitorar e clicar automaticamente no botão "Chamar senha" no sistema Feegow. Ele verifica se há uma senha específica relacionada a explicações médicas ("EC") e, caso detectado, emite um alerta sonoro com voz sintetizada.
