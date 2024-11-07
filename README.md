@@ -1,3 +1,7 @@
+Aqui está o seu `README.md` atualizado com as descrições que você solicitou e incluindo sua autoria no final:
+
+---
+
 # Monitoramento de Senha no Feegow
 
 Script em Python que usa Selenium para monitorar e clicar automaticamente no botão "Chamar senha" no sistema Feegow. Ele verifica se há uma senha específica relacionada a explicações médicas ("EC") e, caso detectado, emite um alerta sonoro com voz sintetizada.
@@ -10,12 +14,49 @@ Script em Python que usa Selenium para monitorar e clicar automaticamente no bot
 - [Uso](#uso)
 - [Contribuição](#contribuição)
 - [Licença](#licença)
+- [Autor](#autor)
 
 ---
 
 ## Descrição
 
 Este script automatiza o monitoramento da página de lista de espera no sistema Feegow, clicando no botão "Chamar senha" e verificando se existe um botão com a sigla "EC" no modal. Quando encontrado, o script emite um alerta sonoro com a mensagem "Atenção, Senha de Explicação". Esse alerta utiliza voz sintetizada em português. O script foi configurado para operar em modo headless, facilitando a execução em segundo plano.
+
+---
+
+### **SCRIPT_EXPLICA.py**
+**Descrição**:  
+Este é o script principal que contém o código responsável por realizar a verificação e execução de tarefas automáticas. Ele lida com a interação com os elementos da página, como encontrar o botão "EC" e verificar se o texto "RECEPÇÃO" está presente, além de realizar o acionamento do alerta de voz quando necessário.
+
+---
+
+### **iniciar_explica.py**
+**Descrição**:  
+Este script é responsável por iniciar o processo de execução do script Python invisível. Ele verifica se o executável do Python e o script invisível existem nos caminhos definidos. Caso ambos sejam encontrados, ele executa o script `executar_invisivel_explica.py` de maneira oculta, sem abrir a janela do terminal. Isso é feito utilizando a função `subprocess.Popen`, com o argumento `CREATE_NO_WINDOW`, que impede que a janela do terminal seja exibida.
+
+---
+
+### **executar_invisivel_explica.py**
+**Descrição**:  
+Este script faz parte do processo de execução invisível do código. Ele verifica se os caminhos para o executável do Python e o script Python principal (`SCRIPT_EXPLICA.py`) estão corretos e existem. Caso tudo esteja certo, o script executa `SCRIPT_EXPLICA.py` de forma oculta, utilizando a função `subprocess.Popen` com a flag `CREATE_NO_WINDOW`. Se ocorrer algum erro durante a execução do script, ele é registrado no arquivo de log `error_log.txt`, e o script é reiniciado a cada 5 segundos. Esse processo garante que o script principal seja reiniciado automaticamente em caso de falha.
+
+---
+
+### **executar_iniciar_explica.BAT**
+**Descrição**:  
+Este é um arquivo de script batch responsável por iniciar o processo de execução do Python, rodando o script `iniciar_explica.py`. Ele invoca o Python de maneira silenciosa (`start /b`) e, caso ocorra algum erro na execução do script, o erro é verificado e, se necessário, o script é reiniciado automaticamente, aguardando 3 segundos antes de reiniciar o processo.
+
+---
+
+### **error_log.txt**
+**Descrição**:  
+Este arquivo de log é utilizado para armazenar os erros que ocorrem durante a execução do script invisível. Caso haja algum erro ao tentar rodar o script, o traceback do erro é registrado neste arquivo para facilitar o diagnóstico e a resolução de problemas. Isso ajuda a monitorar e depurar o funcionamento dos scripts sem precisar observar a execução diretamente.
+
+---
+
+### **DEBUG_EXECUTAR_EXPLICA.BAT**
+**Descrição**:  
+Este arquivo batch é semelhante ao `executar_iniciar_explica.BAT`, mas é utilizado para fins de depuração. Ele também executa o script `SCRIPT_EXPLICA.py` de maneira silenciosa e reinicia o processo em caso de erro, mas com uma função extra de depuração, como exibir mensagens de erro diretamente no console.
 
 ---
 
@@ -149,22 +190,20 @@ Contribuições são sempre bem-vindas! Se você quiser ajudar a melhorar este p
    - No formulário que aparecer, explique o que você fez e por que acredita que suas mudanças são importantes.
    - Clique em **Create Pull Request**.
 
-   O Pull Request será analisado por quem mantém o repositório. Se tudo estiver correto, suas alterações serão incorporadas ao código principal do projeto.
 
----
 
-### Como Funciona?
-
-Essas etapas são chamadas de **fluxo de trabalho com Git** e são uma prática comum em projetos de código aberto. Ao seguir esse processo, você garante que as alterações sejam feitas de forma organizada e controlada, e que todos possam colaborar no projeto sem sobrecarregar o código original.
+Após isso, a equipe do projeto irá revisar suas mudanças e, se tudo estiver certo, elas serão adicionadas ao código principal do repositório.
 
 ---
 
 ## Licença
 
-Este projeto é licenciado sob a Licença MIT. Consulte o arquivo [LICENSE](LICENSE) para obter mais detalhes.
+Este projeto é licenciado sob a Licença MIT - veja o arquivo [LICENSE.md](LICENSE.md) para detalhes.
 
 ---
 
 ## Autor
 
-Desenvolvido por Nicolas Bonza Cavalari Borges.
+Criado por Nicolas Bonza Cavalari Borges.
+
+---
