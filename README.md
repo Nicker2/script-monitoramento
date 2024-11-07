@@ -15,13 +15,11 @@ Script em Python que usa Selenium para monitorar e clicar automaticamente no bot
 
 ---
 
-Aqui está o texto revisado, com um título separado para os arquivos e uma melhor estruturação do índice:
-
----
-
 ## Descrição
 
 Este script automatiza o monitoramento da página de lista de espera no sistema Feegow, clicando no botão "Chamar senha" e verificando se existe um botão com a sigla "EC" no modal. Quando encontrado, o script emite um alerta sonoro com a mensagem "Atenção, Senha de Explicação". Esse alerta utiliza voz sintetizada em português. O script foi configurado para operar em modo headless, facilitando a execução em segundo plano.
+
+[Arquivos e Descrições](#arquivos-e-descricoes)
 
 ---
 
