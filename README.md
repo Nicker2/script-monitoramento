@@ -5,6 +5,7 @@ Script em Python que usa Selenium para monitorar e clicar automaticamente no bot
 ## Índice
 
 - [Descrição](#descrição)
+- [Arquivos e Descrições](#arquivos-e-descricoes)
 - [Pré-requisitos](#pré-requisitos)
 - [Instalação](#instalação)
 - [Uso](#uso)
@@ -14,11 +15,17 @@ Script em Python que usa Selenium para monitorar e clicar automaticamente no bot
 
 ---
 
+Aqui está o texto revisado, com um título separado para os arquivos e uma melhor estruturação do índice:
+
+---
+
 ## Descrição
 
 Este script automatiza o monitoramento da página de lista de espera no sistema Feegow, clicando no botão "Chamar senha" e verificando se existe um botão com a sigla "EC" no modal. Quando encontrado, o script emite um alerta sonoro com a mensagem "Atenção, Senha de Explicação". Esse alerta utiliza voz sintetizada em português. O script foi configurado para operar em modo headless, facilitando a execução em segundo plano.
 
 ---
+
+## Arquivos e Descrições
 
 ### **SCRIPT_EXPLICA.py**
 **Descrição**:  
@@ -90,22 +97,43 @@ Antes de executar o script, você precisa ter o seguinte instalado no seu sistem
 
 ## Uso
 
-1. Configure as credenciais de login no script, substituindo os valores `exemplo@dominio.com` e `senha_exemplo` pelas suas credenciais do Feegow:
+1. **Configuração das credenciais**:  
+   Antes de executar qualquer script, configure as credenciais de login no script `SCRIPT_EXPLICA.py`, substituindo os valores `exemplo@dominio.com` e `senha_exemplo` pelas suas credenciais do Feegow:
 
    ```python
    driver.execute_script("document.getElementById('User').value = 'exemplo@dominio.com';")
    driver.execute_script("document.getElementById('password').value = 'senha_exemplo';")
    ```
 
-2. Execute o script:
+2. **Execução do Script**:  
+   O processo de execução dos scripts pode ser feito de duas formas, dependendo do seu objetivo:
 
-   ```bash
-   python nome_do_script.py
-   ```
+   - **Modo normal (visível)**: Execute o script principal `SCRIPT_EXPLICA.py` diretamente:
 
-3. O script acessará automaticamente a página de login do Feegow, fará o login, navegará para a página de lista de espera e monitorará o botão "Chamar senha".
+     ```bash
+     python SCRIPT_EXPLICA.py
+     ```
 
-4. Quando o botão com "EC" for encontrado, o alerta de voz será ativado. Se o modal aparecer, o script tentará fechá-lo automaticamente.
+     O script acessará automaticamente a página de login do Feegow, fará o login, navegará até a página de lista de espera e começará a monitorar o botão "Chamar senha". Quando o botão "EC" for encontrado, ele acionará um alerta de voz.
+
+   - **Modo invisível**: Para rodar o script de forma oculta (sem abrir o terminal), você deve usar o arquivo batch `executar_iniciar_explica.BAT`. Este arquivo irá iniciar automaticamente o script Python invisível, rodando em segundo plano:
+
+     - Execute o arquivo `.BAT`:
+
+       ```bash
+       executar_iniciar_explica.BAT
+       ```
+
+     Isso fará com que o script seja executado sem abrir uma janela do terminal. Caso haja erro na execução, o script será reiniciado automaticamente.
+
+3. **Verificação de erros**:  
+   Se o script for executado de forma invisível, o arquivo `error_log.txt` registrará qualquer erro ocorrido durante o processo. Caso algo dê errado, você pode verificar o log para diagnosticar o problema.
+
+4. **Depuração**:  
+   Se você precisar depurar o processo, utilize o arquivo `DEBUG_EXECUTAR_EXPLICA.BAT`. Ele é semelhante ao `executar_iniciar_explica.BAT`, mas com a funcionalidade de mostrar as mensagens de erro no console durante a execução.
+
+5. **Reinício automático**:  
+   Caso o script falhe, tanto no modo visível quanto invisível, ele será reiniciado automaticamente após 5 segundos de erro, garantindo que o monitoramento seja contínuo.
 
 ---
 
