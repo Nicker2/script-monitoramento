@@ -1,4 +1,4 @@
-import os
+eimport os
 import time
 import pyttsx3  # Importando a biblioteca para síntese de voz
 from selenium import webdriver
@@ -49,8 +49,8 @@ def fazer_login():
     print("Página de login acessada. Preenchendo credenciais...")
 
     # Preenchendo e enviando os dados de login
-    driver.execute_script("document.getElementById('User').value = 'nidia.corradi@hoclinicas.com.br';")
-    driver.execute_script("document.getElementById('password').value = 'Nlc160582@';")
+    driver.execute_script("document.getElementById('User').value = 'login@exemplo.com.br';")
+    driver.execute_script("document.getElementById('password').value = 'senha_exemplo';")
     driver.execute_script("document.getElementById('Entrar').click();")
     print("Login enviado automaticamente.")
 
