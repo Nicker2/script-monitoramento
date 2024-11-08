@@ -49,29 +49,32 @@ def fazer_login():
     print("Página de login acessada. Preenchendo credenciais...")
 
     # Preenchendo e enviando os dados de login
-    driver.execute_script("document.getElementById('User').value = 'exemplo@dominio.com';")
-    driver.execute_script("document.getElementById('password').value = 'senha_exemplo';")
+    driver.execute_script("document.getElementById('User').value = 'nidia.corradi@hoclinicas.com.br';")
+    driver.execute_script("document.getElementById('password').value = 'Nlc160582@';")
     driver.execute_script("document.getElementById('Entrar').click();")
     print("Login enviado automaticamente.")
+
 
 # Função para verificar se o botão com "EC" está presente no modal
 def verificar_botao_explicacao():
     try:
         print("Verificando a presença do botão com 'EC' no modal...")
-        
+
         # Espera o botão com "EC" aparecer
         botao_ec = WebDriverWait(driver, 5).until(
             EC.visibility_of_element_located(
-                (By.XPATH, "//button[contains(text(), 'EC')]")
+                (By.XPATH, "//button[normalize-space(text()) = 'EC']")
             )
         )
         
         if botao_ec:
-            # Verifica se o texto 'RECEPÇÃO' está presente dentro do botão
-            if "RECEPÇÃO" in botao_ec.text:
-                print("Texto 'RECEPÇÃO' encontrado no botão, ignorando o som.")
+            texto_botao = botao_ec.text.strip()
+            
+            # Verifica se o texto 'RECEPÇÃO' ou 'ESPECIALIDADES' estão presentes dentro do botão
+            if "RECEPÇÃO" in texto_botao or "ESPECIALIDADES" in texto_botao:
+                print(f"Botão com 'EC' encontrado, mas contém '{texto_botao}'. Ignorando o som.")
             else:
-                print("Botão com 'EC' encontrado e 'RECEPÇÃO' não presente no botão. Tocando alerta.")
+                print("Botão com 'EC' encontrado e 'RECEPÇÃO' ou 'ESPECIALIDADES' não presente. Tocando alerta.")
                 tocar_alerta_explicacao("Atenção, Senha de explicação.")
                 time.sleep(10)
                 fechar_modal()  # Tenta fechar o modal após tocar o alerta
@@ -82,6 +85,7 @@ def verificar_botao_explicacao():
     except Exception as e:
         print(f"Ocorreu um erro ao tentar verificar o botão com 'EC': {str(e)}")
         fechar_modal()
+
 
 # Função para fechar o modal com a tecla ESC
 def fechar_modal():
