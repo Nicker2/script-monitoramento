@@ -1,4 +1,4 @@
-eimport os
+import os
 import time
 import pyttsx3  # Importando a biblioteca para síntese de voz
 from selenium import webdriver
