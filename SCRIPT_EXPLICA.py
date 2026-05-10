@@ -5,6 +5,7 @@ import datetime
 import ctypes
 import tkinter as tk
 from tkinter import scrolledtext
+import tempfile # NOVA BIBLIOTECA PARA USAR A PASTA TEMP DO WINDOWS
 
 import psutil
 from gtts import gTTS
@@ -34,6 +35,10 @@ tray_icon = None
 CHROME_HWND = None
 janela_alerta = None
 cor_alerta_atual = "red"
+
+# Usa a pasta Temporária do Windows para NUNCA dar Erro 13 de Permissão
+PASTA_TEMP = tempfile.gettempdir()
+ARQUIVO_OFICIAL_ALERTA = os.path.join(PASTA_TEMP, f"alerta_oficial_{int(time.time())}.mp3")
 
 BLACKLIST_SENHAS = [
     "CONSULTA", "EXAME", "PRIORITÁRIA", "AGENDAMENTOS", "RETORNO", "R2",
@@ -72,7 +77,6 @@ def capturar_hwnd_pelo_pid():
         pids_chrome = [p.pid for p in filhos if 'chrome' in p.name().lower()]
         
         hwnds_encontrados = []
-        
         def callback(hwnd, lParam):
             pid_janela = ctypes.c_ulong()
             ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_janela))
@@ -183,6 +187,16 @@ def desarmar_alarme(manual=False):
 # ==============================================================================
 # FUNÇÕES DE ÁUDIO E LOOP
 # ==============================================================================
+def preparar_audio_inicial():
+    texto_padrao = "Atenção. Senha de marcação cirúrgica."
+    log_msg("Baixando e pré-carregando áudio oficial do alarme...")
+    try:
+        tts = gTTS(text=texto_padrao, lang='pt')
+        tts.save(ARQUIVO_OFICIAL_ALERTA)
+        log_msg(f"Áudio oficial gerado com sucesso na pasta Temp.")
+    except Exception as e:
+        log_msg(f"Erro ao pré-carregar áudio inicial: {str(e)}")
+
 def tocar_audio_em_dispositivo(nome_dispositivo, arquivo_audio):
     try:
         pygame.mixer.quit()
@@ -194,30 +208,53 @@ def tocar_audio_em_dispositivo(nome_dispositivo, arquivo_audio):
     except Exception:
         pass
 
-def gerar_e_tocar_alerta(mensagem, modo="todos", dispositivo_especifico=None):
+def gerar_e_tocar_alerta_teste(mensagem, modo="todos", dispositivo_especifico=None):
     try:
-        audio_file = "alerta_temp.mp3"
+        timestamp = int(time.time() * 1000)
+        audio_file = os.path.join(PASTA_TEMP, f"alerta_teste_{timestamp}.mp3")
         tts = gTTS(text=mensagem, lang='pt')
         tts.save(audio_file)
+        
         if modo == "todos":
             for disp in DISPOSITIVOS_AUDIO:
                 tocar_audio_em_dispositivo(disp, audio_file)
         elif modo == "unico" and dispositivo_especifico:
             tocar_audio_em_dispositivo(dispositivo_especifico, audio_file)
+            
         pygame.mixer.quit()
-        os.remove(audio_file)
+        try: os.remove(audio_file)
+        except: pass
     except Exception as e:
-        log_msg(f"Erro de áudio: {str(e)}")
+        log_msg(f"Erro no áudio de teste: {str(e)}")
 
 def loop_audio_alarme():
     global alarme_ativo
-    texto_padrao = "Atenção. Senha de marcação cirúrgica."
-    while alarme_ativo:
-        gerar_e_tocar_alerta(texto_padrao, "todos")
-        for _ in range(15):
-            if not alarme_ativo:
-                break
-            time.sleep(1)
+    
+    # PLANO B: Se por algum motivo o arquivo não existir (erro no startup ou apagado), cria agora!
+    if not os.path.exists(ARQUIVO_OFICIAL_ALERTA):
+        log_msg("⚠️ Arquivo de áudio não encontrado. Gerando arquivo de emergência agora...")
+        try:
+            texto_padrao = "Atenção. Senha de marcação cirúrgica."
+            tts = gTTS(text=texto_padrao, lang='pt')
+            tts.save(ARQUIVO_OFICIAL_ALERTA)
+            log_msg("Áudio de emergência gerado com sucesso!")
+        except Exception as e:
+            log_msg(f"Falha ao gerar áudio de emergência. O alarme piscará sem som. Erro: {e}")
+
+    try:
+        while alarme_ativo:
+            if os.path.exists(ARQUIVO_OFICIAL_ALERTA):
+                for disp in DISPOSITIVOS_AUDIO:
+                    if not alarme_ativo: break
+                    tocar_audio_em_dispositivo(disp, ARQUIVO_OFICIAL_ALERTA)
+            
+            for _ in range(15):
+                if not alarme_ativo: break
+                time.sleep(1)
+                
+        pygame.mixer.quit()
+    except Exception as e:
+        log_msg(f"Erro no loop de alarme: {e}")
 
 def disparar_estado_alarme():
     global alarme_ativo
@@ -265,7 +302,6 @@ def fazer_login():
         log_msg("Acessando a página de login...")
         driver.get("https://app.feegow.com/main/?P=Login")
         try:
-            # Preenchimento padrão
             WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "User")))
             driver.execute_script(f"document.getElementById('User').value = '{usuario}';")
             driver.execute_script(f"document.getElementById('password').value = '{senha}';")
@@ -273,21 +309,17 @@ def fazer_login():
             log_msg("Login preenchido. Aguardando validação do servidor...")
 
             try:
-                # 1. Tenta identificar se bateu na tela de "usuário já conectado"
                 WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Este usuário já está conectado em outra máquina.')]")))
                 
                 log_msg("⚠️ Sessão dupla detectada! Acionando metralhadora de Bypass Invisível...")
                 
-                # A mágica do JS Injetado no cérebro da página!
                 js_bypass = f"""
                 const user = '{usuario}';
                 const pass = '{senha}';
                 const actionUrl = window.location.href;
 
-                // Transforma a página vermelha numa tela limpa de carregamento
                 document.body.innerHTML = '<div style="display:flex; justify-content:center; align-items:center; height:100vh; background:#17a2b8; color:white; font-family:sans-serif; flex-direction:column;"><h2>Autenticando Acesso</h2><p>Bypass Invisível em andamento...</p></div>';
 
-                // Loop silencioso via Fetch API
                 (async function() {{
                     let sucesso = false;
                     while (!sucesso) {{
@@ -299,11 +331,9 @@ def fazer_login():
                             }});
                             let html = await res.text();
                             
-                            // Se a resposta ainda for erro, espera só 50 milissegundos e atira de novo
                             if (html.includes('Este usuário já está conectado')) {{
                                 await new Promise(resolve => setTimeout(resolve, 50));
                             }} else {{
-                                // Liberou! Redireciona a tela real do Selenium pra dentro.
                                 sucesso = true;
                                 window.location.href = res.url || 'https://app.feegow.com/main/';
                             }}
@@ -313,18 +343,14 @@ def fazer_login():
                     }}
                 }})();
                 """
-                
-                # Dispara a injeção
                 driver.execute_script(js_bypass)
                 
-                # O Python agora só senta e espera o JS terminar de arrombar a porta e carregar a lista
                 log_msg("JS injetado. Fuzilando requisições em background...")
                 WebDriverWait(driver, 300).until(EC.presence_of_element_located((By.CLASS_NAME, "callTicketBtn")))
                 log_msg("✔️ Bypass efetuado! Conexão estabelecida com sucesso.")
                 break
 
             except TimeoutException:
-                # 2. Se a mensagem NÃO apareceu, o login pode ter passado de primeira. Confirma se a home carregou:
                 try:
                     WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CLASS_NAME, "callTicketBtn")))
                     log_msg("✔️ Login direto bem-sucedido. Nenhuma barreira encontrada.")
@@ -332,7 +358,6 @@ def fazer_login():
                 except TimeoutException:
                     log_msg("Demora inesperada na resposta do Feegow. Reiniciando o processo...")
                     continue
-
         except Exception as e:
             log_msg("Falha ao injetar os dados de login. Retentando em 2 segundos...")
             time.sleep(2)
@@ -397,13 +422,19 @@ def on_tray_click(icon, item):
         gerenciar_janelas("mostrar")
 
 def on_tray_exit(icon, item):
-    log_msg("Desligando sistema. Fechando o navegador do robô...")
+    log_msg("Desligando sistema. Limpando memória e rastros...")
     icon.stop()
+    
     if driver:
-        try:
-            driver.quit()
-        except:
-            pass
+        try: driver.quit()
+        except: pass
+        
+    try:
+        if os.path.exists(ARQUIVO_OFICIAL_ALERTA):
+            os.remove(ARQUIVO_OFICIAL_ALERTA)
+    except:
+        pass
+        
     os._exit(0)
 
 def iniciar_tray():
@@ -413,7 +444,7 @@ def iniciar_tray():
     tray_icon.run()
 
 # ==============================================================================
-# INTERFACE GRÁFICA (TKINTER)
+# INTERFACE GRÁFICA (TKINTER) E INICIALIZAÇÃO
 # ==============================================================================
 root = tk.Tk()
 root.title("Painel de Depuração - Monitor Feegow")
@@ -433,7 +464,7 @@ frame_estudio.pack(fill=tk.X, padx=10, pady=5)
 entry_voz = tk.Entry(frame_estudio, font=("Consolas", 12), width=60)
 entry_voz.insert(0, "Atenção. Senha de marcação cirúrgica.")
 entry_voz.pack(side=tk.LEFT, padx=10, pady=10, expand=True, fill=tk.X)
-tk.Button(frame_estudio, text="Testar Texto", bg="#ff9900", fg="black", font=("Consolas", 10, "bold"), command=lambda: threading.Thread(target=gerar_e_tocar_alerta, args=(entry_voz.get(), "todos"), daemon=True).start()).pack(side=tk.RIGHT, padx=10)
+tk.Button(frame_estudio, text="Testar Texto", bg="#ff9900", fg="black", font=("Consolas", 10, "bold"), command=lambda: threading.Thread(target=gerar_e_tocar_alerta_teste, args=(entry_voz.get(), "todos"), daemon=True).start()).pack(side=tk.RIGHT, padx=10)
 
 frame_audio = tk.LabelFrame(root, text="Testes de Hardware de Áudio", bg="#1e1e1e", fg="white", font=("Consolas", 10))
 frame_audio.pack(fill=tk.X, padx=10, pady=5)
@@ -442,9 +473,11 @@ for disp in DISPOSITIVOS_AUDIO:
     frame_linha = tk.Frame(frame_audio, bg="#1e1e1e")
     frame_linha.pack(fill=tk.X, padx=5, pady=2)
     tk.Label(frame_linha, text=f"🔊 {disp}", bg="#1e1e1e", fg="#cccccc").pack(side=tk.LEFT)
-    tk.Button(frame_linha, text="Testar", bg="#444444", fg="white", command=lambda d=disp: threading.Thread(target=gerar_e_tocar_alerta, args=("Teste.", "unico", d), daemon=True).start()).pack(side=tk.RIGHT)
+    tk.Button(frame_linha, text="Testar", bg="#444444", fg="white", command=lambda d=disp: threading.Thread(target=gerar_e_tocar_alerta_teste, args=("Teste.", "unico", d), daemon=True).start()).pack(side=tk.RIGHT)
 
 if __name__ == "__main__":
+    preparar_audio_inicial()
+    
     threading.Thread(target=iniciar_selenium, daemon=True).start()
     threading.Thread(target=iniciar_tray, daemon=True).start()
     root.mainloop()
