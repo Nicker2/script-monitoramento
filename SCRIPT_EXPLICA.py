@@ -1,4 +1,6 @@
+import io
 import os
+import re
 import sys
 import time
 import threading
@@ -798,37 +800,182 @@ def disparar_estado_alarme():
 # ==============================================================================
 # LÓGICA DO SELENIUM E BYPASS INVISÍVEL VIA JS
 # ==============================================================================
-def _achar_chromedriver():
-    """Procura um chromedriver.exe local antes de tentar baixar qualquer coisa.
+def _versao_chrome_instalada():
+    """Versão do Chrome instalado: registro BLBeacon -> pasta -> ''.
 
-    Ordem: pasta do script -> drivers\\ -> PATH -> caches do Selenium Manager e
-    do webdriver_manager. Evita depender de internet/download no arranque.
+    O registro é o caminho mais confiável; a pasta serve de reserva.
+    (GetFileVersionInfo em chrome.exe devolve lixo nessa build.)
     """
-    candidatos = [
-        os.path.join(PASTA_SCRIPT, "chromedriver.exe"),
-        os.path.join(PASTA_SCRIPT, "drivers", "chromedriver.exe"),
-        os.path.join(PASTA_SCRIPT, "chromedriver", "chromedriver.exe"),
-    ]
-    do_path = shutil.which("chromedriver")
-    if do_path:
-        candidatos.append(do_path)
+    try:
+        import winreg
+        for raiz, caminho in (
+            (winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Google\Chrome\BLBeacon"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Google\Chrome\BLBeacon"),
+        ):
+            try:
+                with winreg.OpenKey(raiz, caminho) as chave:
+                    valor, _tipo = winreg.QueryValueEx(chave, "version")
+                    valor = str(valor or "").strip()
+                    if valor:
+                        return valor
+            except OSError:
+                continue
+    except Exception:
+        pass
 
-    raizes = [
-        os.path.join(os.path.expanduser("~"), ".cache", "selenium"),
-        os.path.join(os.path.expanduser("~"), ".wdm"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "WebDriver"),
-    ]
-    for raiz in raizes:
+    versoes = []
+    for raiz in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                 os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                 os.environ.get("LOCALAPPDATA", "")):
+        if not raiz:
+            continue
+        base = os.path.join(raiz, "Google", "Chrome", "Application")
+        if not os.path.isdir(base):
+            continue
+        for nome in os.listdir(base):
+            if nome[:1].isdigit() and os.path.isfile(os.path.join(base, nome, "chrome.exe")):
+                versoes.append(nome)
+    if versoes:
+        versoes.sort(key=lambda v: [int(p) if p.isdigit() else 0 for p in v.split(".")], reverse=True)
+        return versoes[0]
+    return ""
+
+
+def _pasta_drivers():
+    """Pasta onde o próprio programa guarda os chromedriver baixados."""
+    base = os.path.join(os.environ.get("LOCALAPPDATA", PASTA_SCRIPT), "MonitorFeegow", "drivers")
+    try:
+        os.makedirs(base, exist_ok=True)
+        return base
+    except Exception:
+        return None
+
+
+def _versao_de_um_driver(caminho):
+    """Lê a versão de um chromedriver.exe ('ChromeDriver 157.0.8103.51')."""
+    try:
+        saida = subprocess.run(
+            [caminho, "--version"],
+            capture_output=True, text=True, timeout=15,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW: não pisca console
+        )
+        texto = (saida.stdout or "") + (saida.stderr or "")
+        achado = re.search(r"ChromeDriver\s+([0-9]+(?:\.[0-9]+)*)", texto)
+        return achado.group(1) if achado else ""
+    except Exception:
+        return ""
+
+
+def _driver_compativel(versao_driver, versao_chrome):
+    """Compara major.minor.build (157.0.8103).
+
+    O patch (último número) pode mudar sem problema; se o build mudar, o Chrome
+    foi atualizado e o driver precisa ser baixado de novo.
+    """
+    if not versao_driver or not versao_chrome:
+        return False
+    return ".".join(versao_driver.split(".")[:3]) == ".".join(versao_chrome.split(".")[:3])
+
+
+def _baixar_chromedriver(versao_chrome):
+    """Baixa o ChromeDriver da versão exata do Chrome instalado."""
+    import io
+    import ssl
+    import urllib.request
+    import zipfile
+
+    if not versao_chrome:
+        return ""
+    pasta = _pasta_drivers()
+    if not pasta:
+        log_msg("⚠️ Sem pasta para salvar o ChromeDriver (%LOCALAPPDATA% indisponível).")
+        return ""
+
+    alvo = os.path.join(pasta, f"chromedriver-{versao_chrome}.exe")
+    enderecos = (
+        f"https://storage.googleapis.com/chrome-for-testing-public/{versao_chrome}/win64/chromedriver-win64.zip",
+        f"https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/{versao_chrome}/win64/chromedriver-win64.zip",
+    )
+    contexto = ssl.create_default_context()
+
+    for url in enderecos:
+        try:
+            log_msg(f"⬇️ Baixando ChromeDriver {versao_chrome} ({url.split('/')[2]})...")
+            requisicao = urllib.request.Request(url, headers={"User-Agent": "MonitorFeegow/1.0"})
+            with urllib.request.urlopen(requisicao, timeout=90, context=contexto) as resposta:
+                if getattr(resposta, "status", 200) != 200:
+                    continue
+                bruto = resposta.read()
+            if len(bruto) < 1_000_000:
+                log_msg(f"⚠️ Download muito pequeno ({len(bruto)} bytes) — tentando o próximo endereço.")
+                continue
+
+            with zipfile.ZipFile(io.BytesIO(bruto)) as pacote:
+                interno = next((n for n in pacote.namelist()
+                                if n.lower().endswith("chromedriver.exe")), "")
+                if not interno:
+                    continue
+                temporario = alvo + ".tmp"
+                with pacote.open(interno) as origem, open(temporario, "wb") as saida:
+                    shutil.copyfileobj(origem, saida)
+
+            baixada = _versao_de_um_driver(temporario)
+            if not _driver_compativel(baixada, versao_chrome):
+                log_msg(f"⚠️ Driver baixado ({baixada or 'ilegível'}) não casa com o Chrome {versao_chrome}.")
+                try:
+                    os.remove(temporario)
+                except Exception:
+                    pass
+                continue
+
+            os.replace(temporario, alvo)
+            log_msg(f"✅ ChromeDriver {baixada} salvo em {alvo}")
+            return alvo
+        except Exception as e:
+            log_msg(f"⚠️ Falha no download ({url.split('/')[2]}): {e}")
+            continue
+    return ""
+
+
+def _candidatos_driver():
+    """Todos os chromedriver.exe plausíveis, do mais novo para o mais antigo."""
+    vistos, lista = set(), []
+
+    def adicionar(caminho):
+        if not caminho:
+            return
+        chave = os.path.normcase(os.path.abspath(caminho))
+        if chave in vistos or not os.path.isfile(caminho):
+            return
+        vistos.add(chave)
+        lista.append(caminho)
+
+    pasta = _pasta_drivers()
+    if pasta and os.path.isdir(pasta):
+        arquivos = [a for a in os.listdir(pasta) if a.lower().endswith(".exe")]
+        arquivos.sort(
+            key=lambda a: [int(p) for p in re.findall(r"\d+", a)] or [0],
+            reverse=True,
+        )
+        for nome in arquivos:
+            adicionar(os.path.join(pasta, nome))
+
+    adicionar(os.path.join(PASTA_SCRIPT, "chromedriver.exe"))
+    adicionar(os.path.join(PASTA_SCRIPT, "drivers", "chromedriver.exe"))
+    adicionar(os.path.join(PASTA_SCRIPT, "chromedriver", "chromedriver.exe"))
+    adicionar(shutil.which("chromedriver"))
+
+    for raiz in (os.path.join(os.path.expanduser("~"), ".cache", "selenium"),
+                 os.path.join(os.path.expanduser("~"), ".wdm"),
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "WebDriver")):
         if not raiz or not os.path.isdir(raiz):
             continue
-        for pasta, _sub, arquivos in os.walk(raiz):
+        for pasta_raiz, _sub, arquivos in os.walk(raiz):
             if "chromedriver.exe" in arquivos:
-                candidatos.append(os.path.join(pasta, "chromedriver.exe"))
+                adicionar(os.path.join(pasta_raiz, "chromedriver.exe"))
 
-    for caminho in candidatos:
-        if caminho and os.path.isfile(caminho):
-            return caminho
-    return None
+    return lista
 
 
 def _encerrar_instancias_antigas(perfil):
@@ -963,14 +1110,45 @@ def _limpar_scoped_dirs_orfas(idade_min_horas=1.0):
     return removidas
 
 
+def _garantir_chromedriver():
+    """Devolve um chromedriver compatível com o Chrome instalado.
+
+    Fluxo: lê a versão do Chrome, procura um driver compatível na máquina e,
+    se não houver, baixa em %LOCALAPPDATA%\\MonitorFeegow\\drivers.
+    """
+    versao_chrome = _versao_chrome_instalada()
+    candidatos = _candidatos_driver()
+
+    if versao_chrome:
+        log_msg(f"🔎 Chrome instalado: {versao_chrome}")
+        for caminho in candidatos:
+            versao_driver = _versao_de_um_driver(caminho)
+            if _driver_compativel(versao_driver, versao_chrome):
+                log_msg(f"✅ ChromeDriver compatível: {os.path.basename(caminho)} ({versao_driver})")
+                return caminho
+
+        log_msg("⬇️ Nenhum ChromeDriver compatível na máquina — baixando o da versão do Chrome...")
+        baixado = _baixar_chromedriver(versao_chrome)
+        if baixado:
+            return baixado
+        log_msg("⚠️ Não consegui baixar o ChromeDriver. Vou tentar com o que já existe.")
+    else:
+        log_msg("⚠️ Não consegui descobrir a versão do Chrome instalado.")
+
+    if candidatos:
+        log_msg(f"⚠️ Usando ChromeDriver sem confirmar a versão: {os.path.basename(candidatos[0])}")
+        return candidatos[0]
+    return ""
+
+
 def criar_driver_chrome(options):
     """Cria o webdriver.Chrome priorizando o chromedriver local.
 
     Só tenta baixar da internet se não houver nenhum chromedriver na máquina.
     """
-    achado = _achar_chromedriver()
+    achado = _garantir_chromedriver()
     if achado:
-        log_msg(f"🚗 chromedriver local: {achado}")
+        log_msg(f"🚗 chromedriver em uso: {achado}")
         return webdriver.Chrome(service=Service(executable_path=achado), options=options)
 
     if ChromeDriverManager is None:

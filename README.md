@@ -287,7 +287,7 @@ Bibliotecas Python (todas no `requirements.txt`):
    - Escolha a versão que bate com o seu Chrome (os três primeiros números, ex.: `157.0.8103.51`)
    - Baixe `chromedriver-win64.zip`, extraia e copie `chromedriver.exe` para a pasta do script
 
-   O script procura nessa ordem: **pasta do script** → `drivers\` → PATH → cache do Selenium Manager → cache do `webdriver_manager`. Só se não achar nenhum ele tenta baixar — e aí a máquina precisa de acesso liberado ao `googlechromelabs.github.io`.
+   **Isso é opcional:** o script confere a versão do Chrome instalado e, se não houver um driver compatível, baixa sozinho para `%LOCALAPPDATA%\MonitorFeegow\drivers`. A cópia manual só serve para PC sem internet ou com o download bloqueado.
 
 4. Rode o script uma vez para ele criar os arquivos de configuração:
 
@@ -437,6 +437,15 @@ Regras de segurança:
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### ChromeDriver se atualiza sozinho
+
+- O script lê a **versão do Chrome instalado** (registro `HKCU\Software\Google\Chrome\BLBeacon`, com a pasta `Application\<versão>` como reserva) e confere se o driver que está na máquina combina com ela. Se não combinar, **baixa o certo** sozinho.
+- Drivers ficam em `%LOCALAPPDATA%\MonitorFeegow\drivers\chromedriver-<versão>.exe` — um por versão, não sobrescreve nada (evita o arquivo travado no Windows) e dispensa permissão de administrador.
+- Downloads usados (o catálogo do `webdriver_manager` é bloqueado nessa rede): `storage.googleapis.com/chrome-for-testing-public/<versão>/win64/chromedriver-win64.zip` e `edgedl.me.gvt1.com/...`.
+- **Regra de compatibilidade:** compara `major.minor.build` (ex.: `157.0.8103`). Patch diferente continua valendo; build novo (Chrome atualizou) força o download.
+- O `--version` do driver é executado antes de aceitar o arquivo, então um download corrompido nunca entra em uso.
+- Ordem de busca: `%LOCALAPPDATA%\MonitorFeegow\drivers` → pasta do script → PATH → caches do Selenium/`webdriver_manager`. Se nada combinar e o download falhar, usa o que existe e avisa no log.
 
 ### Sem o balão "Restaurar páginas?"
 
