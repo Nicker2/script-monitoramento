@@ -14,6 +14,7 @@ As regras de filtro e as credenciais ficam em arquivos **JSON separados** (`filt
 - [Instalação](#instalação)
 - [Uso](#uso)
 - [Solução de Problemas](#solução-de-problemas)
+- [Limpeza de Disco](#limpeza-de-disco-pcs-antigos)
 - [Histórico de Alterações](#histórico-de-alterações)
 - [Contribuição](#contribuição)
 - [Licença](#licença)
@@ -87,6 +88,12 @@ Modelo versionado do arquivo de credenciais, só com valores de exemplo (`exempl
 ### **requirements.txt**
 **Descrição**:
 Lista das bibliotecas Python usadas (selenium, webdriver-manager, gTTS, pygame, pystray, Pillow e psutil) para instalar tudo com um único comando.
+
+---
+
+### **LIMPAR_LIXO.py**
+**Descrição**:
+Auditor e limpador do lixo que o Chrome/ChromeDriver deixam no PC. Roda só relatório por padrão (`--limpar` para apagar). Acha perfis temporários `scoped_dir*`, sobras do atualizador do Chrome no TEMP, extrações `_MEI*` e — o que mais enche o HD — **versões antigas do Chrome** em `Program Files\Google\Chrome\Application`. Nunca apaga pasta de processo vivo nem a versão do Chrome em uso.
 
 ---
 
@@ -378,6 +385,36 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 | Pastas `chromecrx_chrome_url_fetcher_...` / `chrome_chrome_BITS_...` | Não são do script: vêm do **instalador/atualizador do próprio Chrome** (BITS + url_fetcher). Somam poucos KB e o Windows limpa sozinho. |
 | `Could not reach host` / `Connection reset` ao iniciar | O `webdriver_manager` não conseguiu baixar o chromedriver (rede/firewall/proxy). Baixe manualmente em <https://googlechromelabs.github.io/chrome-for-testing/> e salve como `chromedriver.exe` na pasta do script — aí ele não precisa de internet para isso. |
 | `Unable to obtain driver for chrome` | Mesma causa acima: chromedriver ausente. A mensagem nova do script já mostra a pasta onde salvar o arquivo. |
+
+---
+
+## Limpeza de Disco (PCs antigos)
+
+PCs que rodaram versões antigas do script costumam ficar com o disco cheio. O `LIMPAR_LIXO.py` mostra exatamente onde está o peso e limpa o que é seguro:
+
+```bash
+python LIMPAR_LIXO.py                          # só relatório
+python LIMPAR_LIXO.py --limpar                 # apaga (pede confirmação)
+python LIMPAR_LIXO.py --limpar --sim           # apaga sem perguntar
+```
+
+O que ele procura:
+
+| Item | Onde | Tamanho típico |
+| :--- | :--- | :--- |
+| `scoped_dir<pid>_*` | `%TEMP%` | 60–90 MB cada (perfil temporário do ChromeDriver) |
+| `chrome_*`, `chromecrx_*`, `chrome_chrome_BITS_*` | `%TEMP%` | KB (atualizador do Chrome) |
+| `_MEI*` | `%TEMP%` | dezenas de MB (extração do PyInstaller) |
+| Versões antigas do Chrome | `Program Files\Google\Chrome\Application\<versão>` | **~400 MB cada** — é o que costuma encher o HD |
+| `scoped_dir*`, `chrome_debug.log` | pasta do script | KB |
+
+Regras de segurança:
+
+- Só mexe no TEMP em pastas com **mais de 1 hora** (`--idade` ajusta).
+- Nunca apaga `scoped_dir` cujo **PID ainda está vivo**.
+- Em `Program Files` mantém **a versão mais nova** e a que está **em uso**; apaga só as antigas — e precisa rodar **como Administrador** para conseguir.
+
+> Para impedir que o lixo volte: a versão atual do script usa perfil de Chrome fixo (`%LOCALAPPDATA%\MonitorFeegow\chrome_profile`) e já limpa os órfãos do TEMP no arranque.
 
 ---
 
