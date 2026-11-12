@@ -107,6 +107,7 @@ CREDENCIAIS_PADRAO = {
 
 _FILTROS = dict(FILTROS_PADRAO)
 _FILTROS_MTIME = 0.0
+_CRED_USUARIO_LOGADO = None
 
 
 def normalizar_texto(texto):
@@ -259,6 +260,7 @@ def avaliar_chamada(texto_botao):
 
 def carregar_credenciais():
     """Lê credenciais.json (cria a partir do exemplo na primeira execução)."""
+    global _CRED_USUARIO_LOGADO
     if not os.path.exists(ARQ_CREDENCIAIS):
         try:
             modelo = dict(CREDENCIAIS_PADRAO)
@@ -299,7 +301,9 @@ def carregar_credenciais():
     if not credenciais["usuario"] or credenciais["usuario"].lower() == CREDENCIAIS_PADRAO["usuario"]:
         log_msg("⚠️ ATENÇÃO: credenciais.json está com os dados de EXEMPLO. Preencha usuário e senha.")
     else:
-        log_msg(f"🔐 Credenciais carregadas para: {credenciais['usuario']}")
+        if _CRED_USUARIO_LOGADO != credenciais["usuario"]:
+            _CRED_USUARIO_LOGADO = credenciais["usuario"]
+            log_msg(f"🔐 Credenciais carregadas para: {credenciais['usuario']}")
     return credenciais
 
 
@@ -332,19 +336,25 @@ def capturar_hwnd_pelo_pid():
         driver_process = psutil.Process(driver_pid)
         filhos = driver_process.children(recursive=True)
         pids_chrome = [p.pid for p in filhos if 'chrome' in p.name().lower()]
-        
+
         hwnds_encontrados = []
+
         def callback(hwnd, lParam):
+            # hwnd chega como c_void_p: converter para int, senão o log e o
+            # ShowWindow recebem um objeto ctypes em vez do handle.
+            h = hwnd.value if hasattr(hwnd, "value") else hwnd
+            if not h:
+                return True
             pid_janela = ctypes.c_ulong()
-            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_janela))
+            ctypes.windll.user32.GetWindowThreadProcessId(h, ctypes.byref(pid_janela))
             if pid_janela.value in pids_chrome:
-                if ctypes.windll.user32.GetWindowTextLengthW(hwnd) > 0:
-                    hwnds_encontrados.append(hwnd)
+                if ctypes.windll.user32.GetWindowTextLengthW(h) > 0:
+                    hwnds_encontrados.append(int(h))
             return True
-            
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
         ctypes.windll.user32.EnumWindows(WNDENUMPROC(callback), 0)
-        
+
         return hwnds_encontrados[0] if hwnds_encontrados else None
     except Exception as e:
         log_msg(f"Erro ao rastrear PID: {e}")
