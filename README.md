@@ -384,6 +384,8 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 | O login não passa | Confira `usuario`/`senha` no `credenciais.json`. O log avisa se ainda está com os dados de exemplo. |
 | "Usuário já conectado em outra máquina" | É esperado: o script cai no bypass invisível automaticamente e assume a sessão. |
 | O programa não acha o Chrome | Feche as janelas do Chrome abertas pelo Selenium e reinicie (o rastreamento é por PID). |
+| `Chrome failed to start: crashed (DevToolsActivePort file doesn't exist)` | Um Chrome órfão de execução anterior estava travando o perfil fixo. O script agora encerra esses processos no arranque (`🧹 Encerrei N processo(s) de Chrome antigos`) e, se ainda falhar, abre com perfil temporário. |
+| Clique no ícone da bandeja não responde / pisca | Corrigido: o clique agora é agendado para a thread do Tk (antes mexia na janela direto da thread do pystray, o que travava), o estado vem do `root.state()` em vez de um flag, há trava de 400 ms contra clique duplo e o menu ganhou **Mostrar Painel** / **Ocultar Painel** separados. |
 | Pastas `scoped_dir...` enchendo o TEMP | São perfis temporários do ChromeDriver (60–90 MB cada). O script agora usa um **perfil fixo** em `%LOCALAPPDATA%\MonitorFeegow\chrome_profile` e limpa os órfãos no arranque. Se quiser apagar na mão, feche o monitoramento antes. |
 | Pastas `chromecrx_chrome_url_fetcher_...` / `chrome_chrome_BITS_...` | Não são do script: vêm do **instalador/atualizador do próprio Chrome** (BITS + url_fetcher). Somam poucos KB e o Windows limpa sozinho. |
 | Alarme não para depois que a senha sai | Corrigido: o script agora só considera "senha" um botão cujo texto case com as listas de `filtros.json` (antes qualquer botão da página que contivesse um termo de busca — ex. um filtro "RECEPÇÃO" — era confundido com a senha e o alarme nunca desarmava). Se ainda acontecer, veja no log se aparece `🔇 A senha saiu da tela`. |
@@ -432,6 +434,13 @@ Regras de segurança:
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Bandeja do Windows e perfil do Chrome estáveis
+
+- **Clique no ícone bugando:** `on_tray_click` mexia em `root.withdraw()/deiconify()` direto da **thread do pystray** — Tkinter não é thread-safe e o app travava/dessincronizava. Agora tudo passa por `root.after(0, ...)`.
+- Estado real da janela via `_janela_visivel()` (`root.state()`), não mais pelo flag `is_visible`; trava de 400 ms contra o clique duplo que o pystray às vezes dispara; menu com **Mostrar Painel** / **Ocultar Painel** explícitos.
+- `_hwnd_chrome()` valida o handle com `IsWindow` e reencontra o Chrome se ele foi reaberto (antes usava um handle morto).
+- **Perfil fixo travado:** se uma execução anterior morreu na força, um Chrome órfão segura `%LOCALAPPDATA%\MonitorFeegow\chrome_profile` e o próximo início falha com `Chrome failed to start: crashed (DevToolsActivePort file doesn't exist)`. `_encerrar_instancias_antigas()` mata só os processos cujo cmdline contém o nosso perfil, e existe fallback para perfil temporário.
 
 ### Alarme desarmando de verdade + novos ajustes
 

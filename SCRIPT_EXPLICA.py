@@ -510,6 +510,8 @@ def log_msg(mensagem):
             pass
 
 def capturar_hwnd_pelo_pid():
+    if driver is None:
+        return None
     try:
         driver_pid = driver.service.process.pid
         driver_process = psutil.Process(driver_pid)
@@ -539,19 +541,64 @@ def capturar_hwnd_pelo_pid():
         log_msg(f"Erro ao rastrear PID: {e}")
         return None
 
+def _janela_visivel():
+    """Estado REAL da janela — não confia só no flag (o Tk pode mudar sozinho)."""
+    try:
+        if not root.winfo_exists():
+            return False
+        return root.state() not in ("withdrawn", "iconic")
+    except Exception:
+        return False
+
+
+def _hwnd_chrome():
+    """HWND válido do Chrome; reencontra se o processo foi reaberto."""
+    global CHROME_HWND
+    try:
+        if CHROME_HWND and ctypes.windll.user32.IsWindow(CHROME_HWND):
+            return CHROME_HWND
+    except Exception:
+        pass
+    try:
+        novo = capturar_hwnd_pelo_pid()
+        if novo:
+            CHROME_HWND = novo
+            return novo
+    except Exception:
+        pass
+    return None
+
+
 def gerenciar_janelas(acao):
-    global is_visible, CHROME_HWND
+    global is_visible
     if acao == "ocultar":
-        root.withdraw()
-        if CHROME_HWND:
-            ctypes.windll.user32.ShowWindow(CHROME_HWND, 0)
+        try:
+            root.withdraw()
+        except Exception:
+            pass
+        hwnd = _hwnd_chrome()
+        if hwnd:
+            try:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)
+            except Exception:
+                pass
         is_visible = False
         log_msg("Painel e Navegador ocultados da barra de tarefas.")
     elif acao == "mostrar":
-        root.deiconify()
-        if CHROME_HWND:
-            ctypes.windll.user32.ShowWindow(CHROME_HWND, 5)
-            ctypes.windll.user32.SetWindowPos(CHROME_HWND, 0, 100, 100, 1024, 768, 0x0040)
+        try:
+            root.deiconify()
+            root.state("normal")
+            root.lift()
+            root.focus_force()
+        except Exception:
+            pass
+        hwnd = _hwnd_chrome()
+        if hwnd:
+            try:
+                ctypes.windll.user32.ShowWindow(hwnd, 5)
+                ctypes.windll.user32.SetWindowPos(hwnd, 0, 100, 100, 1024, 768, 0x0040)
+            except Exception:
+                pass
         is_visible = True
         log_msg("Painel e Navegador agora estão visíveis.")
 
@@ -784,6 +831,34 @@ def _achar_chromedriver():
     return None
 
 
+def _encerrar_instancias_antigas(perfil):
+    """Encerra Chrome/chromedriver órfãos que ficaram segurando o nosso perfil.
+
+    Sem isso, um Chrome que sobrou de uma execução morta na força trava a pasta
+    e o próximo início morre com 'Chrome failed to start: crashed
+    (DevToolsActivePort file doesn't exist)'.
+    """
+    if not perfil:
+        return 0
+    alvo = os.path.normcase(os.path.abspath(perfil))
+    mortos = 0
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            nome = (proc.info.get("name") or "").lower()
+            if nome not in ("chrome.exe", "chromedriver.exe"):
+                continue
+            linha = os.path.normcase(" ".join(proc.info.get("cmdline") or []))
+            if alvo and alvo in linha:
+                proc.kill()
+                mortos += 1
+        except Exception:
+            continue
+    if mortos:
+        log_msg(f"🧹 Encerrei {mortos} processo(s) de Chrome antigos que seguravam o perfil.")
+        time.sleep(1.5)
+    return mortos
+
+
 def _pasta_perfil_chrome():
     """Perfil fixo do Chrome do monitoramento.
 
@@ -863,31 +938,40 @@ def iniciar_selenium():
     _SELENIUM_RODANDO = True
     try:
         log_msg("Iniciando WebDriver no 'limbo' (fora da tela)...")
-        options = webdriver.ChromeOptions()
-        prefs = {"profile.default_content_setting_values.notifications": 2}
-        options.add_experimental_option("prefs", prefs)
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--log-level=3")
-        options.add_argument("--window-position=-10000,-10000") 
 
-        # Perfil fixo: evita o chromedriver criar uma pasta scoped_dir nova no
-        # TEMP a cada execução (e reaproveita os cookies da sessão).
         perfil_chrome = _pasta_perfil_chrome()
         if perfil_chrome:
-            options.add_argument(f"--user-data-dir={perfil_chrome}")
+            # perfil fixo + Chrome órfão de execução anterior = pasta travada
+            _encerrar_instancias_antigas(perfil_chrome)
+
+        def montar_options(com_perfil=True):
+            opcoes = webdriver.ChromeOptions()
+            opcoes.add_experimental_option(
+                "prefs", {"profile.default_content_setting_values.notifications": 2})
+            for argumento in ("--disable-gpu", "--no-sandbox", "--log-level=3",
+                              "--window-position=-10000,-10000"):
+                opcoes.add_argument(argumento)
+            if com_perfil and perfil_chrome:
+                opcoes.add_argument(f"--user-data-dir={perfil_chrome}")
+            return opcoes
 
         _limpar_scoped_dirs_orfas()
 
         try:
-            driver = criar_driver_chrome(options)
+            driver = criar_driver_chrome(montar_options(True))
         except Exception as e:
-            log_msg(f"🛑 O WebDriver não iniciou: {type(e).__name__}: {e}")
-            log_msg("   Baixe o chromedriver da sua versão do Chrome em "
-                    "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
-                    f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
-            log_msg("   O monitoramento NÃO foi iniciado. Feche e abra de novo depois de colocar o arquivo.")
-            return
+            log_msg(f"⚠️ O Chrome não abriu com o perfil fixo ({type(e).__name__}). "
+                    "Tentando com perfil temporário...")
+            try:
+                driver = criar_driver_chrome(montar_options(False))
+                log_msg("✔️ Chrome aberto com perfil temporário (o perfil fixo estava em uso).")
+            except Exception as e2:
+                log_msg(f"🛑 O WebDriver não iniciou: {type(e2).__name__}: {e2}")
+                log_msg("   Baixe o chromedriver da sua versão do Chrome em "
+                        "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
+                        f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
+                log_msg("   O monitoramento NÃO foi iniciado. Feche e abra de novo depois de colocar o arquivo.")
+                return
 
         time.sleep(2)
         CHROME_HWND = capturar_hwnd_pelo_pid()
@@ -1294,11 +1378,42 @@ def criar_icone_imagem(cor):
     dc.rectangle((28, 40, 36, 56), fill=cor)
     return image
 
-def on_tray_click(icon, item):
-    if is_visible:
+_ULTIMO_TOGGLE = 0.0
+
+
+def _alternar_janelas():
+    """Alterna mostrar/ocultar — SEMPRE agendado para a thread do Tk."""
+    global _ULTIMO_TOGGLE
+    agora = time.time()
+    if (agora - _ULTIMO_TOGGLE) < 0.4:
+        return  # clique duplo acidental (o pystray às vezes dispara 2x)
+    _ULTIMO_TOGGLE = agora
+    if _janela_visivel():
         gerenciar_janelas("ocultar")
     else:
         gerenciar_janelas("mostrar")
+
+
+def on_tray_click(icon, item):
+    """pystray roda em OUTRA thread: mexer no Tk direto daqui travava o app."""
+    try:
+        root.after(0, _alternar_janelas)
+    except Exception:
+        pass
+
+
+def on_tray_mostrar(icon, item):
+    try:
+        root.after(0, lambda: gerenciar_janelas("mostrar"))
+    except Exception:
+        pass
+
+
+def on_tray_ocultar(icon, item):
+    try:
+        root.after(0, lambda: gerenciar_janelas("ocultar"))
+    except Exception:
+        pass
 
 def on_tray_exit(icon, item):
     log_msg("Desligando sistema. Limpando memória e rastros...")
@@ -1318,7 +1433,13 @@ def on_tray_exit(icon, item):
 
 def iniciar_tray():
     global tray_icon
-    menu = pystray.Menu(item('Mostrar / Ocultar Painel', on_tray_click, default=True), item('Encerrar Sistema', on_tray_exit))
+    menu = pystray.Menu(
+        item('Mostrar / Ocultar Painel', on_tray_click, default=True),
+        item('Mostrar Painel', on_tray_mostrar),
+        item('Ocultar Painel', on_tray_ocultar),
+        pystray.Menu.SEPARATOR,
+        item('Encerrar Sistema', on_tray_exit),
+    )
     tray_icon = pystray.Icon("Monitor_Feegow", criar_icone_imagem("blue"), "Monitor Feegow (MC)", menu)
     tray_icon.run()
 
