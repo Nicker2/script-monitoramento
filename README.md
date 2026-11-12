@@ -134,7 +134,9 @@ Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo,
   "blacklist": ["CONSULTA", "EXAME", "PRIORITÁRIA", "..."],
   "whitelist": ["MC URGENTE"],
   "pausa_minutos": 15,
-  "intervalo_busca_segundos": 10
+  "intervalo_busca_segundos": 10,
+  "alerta_tela": false,
+  "alerta_voz": true
 }
 ```
 
@@ -146,8 +148,23 @@ Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo,
 | `whitelist` | Se casar, **dispara o alarme mesmo que também case com a blacklist** (tem prioridade). |
 | `pausa_minutos` | Quanto tempo o botão "CIENTE" silencia os alertas (padrão 15). |
 | `intervalo_busca_segundos` | Espera entre uma verificação e outra na lista de espera (padrão 10). |
+| `alerta_tela` | `true`/`false` — liga ou desliga a **janela vermelha piscando** na tela (padrão `true`). |
+| `alerta_voz` | `true`/`false` — liga ou desliga a **fala sintetizada** (padrão `true`). |
 
 > A comparação ignora **acentos e maiúsculas/minúsculas** (`PRIORITARIA` casa com `PRIORITÁRIA`). Chaves começando com `_` (ex.: `_comentario`) são ignoradas.
+
+**Modos de alerta (as duas chaves do fim):**
+
+| Quero... | `alerta_tela` | `alerta_voz` |
+| :--- | :--- | :--- |
+| Fala + janela piscando (padrão) | `true` | `true` |
+| **Só voz, sem nada na tela** | `false` | `true` |
+| Só a janela, sem som | `true` | `false` |
+| Nenhum (só registra no log) | `false` | `false` |
+
+`true`/`false`, `1`/`0`, `"sim"`/`"não"` e `"on"`/`"off"` são todos aceitos.
+
+**Ordem de decisão do filtro:** `whitelist` > `blacklist` > dispara. A whitelist existe para o caso "tem palavra da blacklist, mas é urgente mesmo".
 
 ### **credenciais.json**
 Usuário e senha do Feegow. **Não é versionado** (está no `.gitignore`) — o script cria na primeira execução a partir de `credenciais.exemplo.json` e avisa no log até você preencher.
@@ -156,10 +173,28 @@ Usuário e senha do Feegow. **Não é versionado** (está no `.gitignore`) — o
 {
   "usuario": "seu.usuario@clinica.com.br",
   "senha": "sua-senha",
+  "rota_login": "auto",
   "url_login": "https://app.feegow.com/main/?P=Login",
+  "url_login_sso": "https://app.feegow.com/main/sso/",
   "url_lista_espera": "https://app.feegow.com/pre-v8/?P=ListaEspera&Pers=1"
 }
 ```
+
+| Campo | O que faz |
+| :--- | :--- |
+| `usuario` | E-mail de acesso ao Feegow. |
+| `senha` | Senha do Feegow. |
+| `rota_login` | `auto` (padrão: tenta o SSO e depois a antiga), `sso` (só a nova) ou `legado` (só a antiga). |
+| `url_login` | Página de login antiga (`?P=Login`). |
+| `url_login_sso` | Página de login nova (`/main/sso/`). |
+| `url_lista_espera` | Página da lista de espera monitorada. |
+
+**As duas rotas de login:**
+
+- **SSO (`/main/sso/`)** — duas etapas (e-mail → senha). Quando outra máquina está logada, o Feegow pede confirmação e **derruba a outra máquina**: o script confirma sozinho e avisa no log.
+- **Legada (`?P=Login`)** — formulário único. Se aparecer "usuário já conectado em outra máquina", o script usa o bypass (repete o POST até assumir a sessão).
+- Com `rota_login: "auto"`, se uma rota falhar ele tenta a outra automaticamente.
+- E-mail/senha errados são detectados pelas mensagens "E-mail ou senha incorretos" (SSO) e "E-mail de acesso ou senha não conferem" (legada) — nesses casos o script **para** em vez de ficar tentando e travar a conta.
 
 > ⚠️ Nunca faça commit do `credenciais.json` com a senha real. O repositório é público.
 
@@ -297,6 +332,12 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Alertas ligáveis/desligáveis + login SSO
+
+- **`alerta_tela`** e **`alerta_voz`** no `filtros.json`: dá para usar só voz (sem janela), só janela (sem som) ou desligar os dois.
+- Login passou a aceitar a **rota nova do Feegow (`https://app.feegow.com/main/sso/`)**: fluxo de duas etapas (e-mail → senha), confirmação automática da troca de sessão quando outra máquina está logada, e queda para a rota antiga se o SSO falhar (`rota_login` no `credenciais.json`).
+- Senha/e-mail errados agora param o login com mensagem clara, em vez de ficar tentando em loop.
 
 ### Versão anterior
 

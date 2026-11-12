@@ -22,5 +22,7 @@
   ],
   "whitelist": [],
   "pausa_minutos": 15,
-  "intervalo_busca_segundos": 10
+  "intervalo_busca_segundos": 10,
+  "alerta_tela": false,
+  "alerta_voz": true
 }

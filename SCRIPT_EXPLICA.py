@@ -65,12 +65,16 @@ FILTROS_PADRAO = {
     "whitelist": [],
     "pausa_minutos": 15,
     "intervalo_busca_segundos": 10,
+    "alerta_tela": True,
+    "alerta_voz": True,
 }
 
 CREDENCIAIS_PADRAO = {
     "usuario": "exemplo@exemplo.com",
     "senha": "exemplo",
+    "rota_login": "auto",
     "url_login": "https://app.feegow.com/main/?P=Login",
+    "url_login_sso": "https://app.feegow.com/main/sso/",
     "url_lista_espera": "https://app.feegow.com/pre-v8/?P=ListaEspera&Pers=1",
 }
 
@@ -88,6 +92,21 @@ def normalizar_texto(texto):
 def _ler_json(caminho):
     with open(caminho, "r", encoding="utf-8-sig") as arquivo:
         return json.load(arquivo)
+
+
+def _para_bool(valor, padrao=True):
+    """Converte true/false, 1/0, "sim"/"não", "on"/"off" em booleano."""
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, (int, float)):
+        return valor != 0
+    if isinstance(valor, str):
+        texto = normalizar_texto(valor)
+        if texto in ("1", "SIM", "S", "TRUE", "VERDADEIRO", "ATIVO", "ATIVADA", "ON", "LIGADO"):
+            return True
+        if texto in ("0", "NAO", "N", "FALSE", "FALSO", "INATIVO", "INATIVA", "OFF", "DESLIGADO"):
+            return False
+    return padrao
 
 
 def _lista_normalizada(valor):
@@ -149,12 +168,16 @@ def carregar_filtros(forcar=False):
             "whitelist": _lista_normalizada(combinado.get("whitelist")),
             "pausa_minutos": max(1, int(combinado.get("pausa_minutos") or 15)),
             "intervalo_busca_segundos": max(1, int(combinado.get("intervalo_busca_segundos") or 10)),
+            "alerta_tela": _para_bool(combinado.get("alerta_tela"), True),
+            "alerta_voz": _para_bool(combinado.get("alerta_voz"), True),
         }
         _FILTROS_MTIME = mtime
         log_msg(
             "⚙️ filtros.json carregado: gatilho '"
             f"{_FILTROS['termo_gatilho']}', {len(_FILTROS['blacklist'])} na blacklist, "
-            f"{len(_FILTROS['whitelist'])} na whitelist."
+            f"{len(_FILTROS['whitelist'])} na whitelist | alerta_tela="
+            f"{'ON' if _FILTROS['alerta_tela'] else 'OFF'}, alerta_voz="
+            f"{'ON' if _FILTROS['alerta_voz'] else 'OFF'}."
         )
     except Exception as e:
         _FILTROS_MTIME = mtime
@@ -225,7 +248,9 @@ def carregar_credenciais():
     credenciais = {
         "usuario": str(combinado.get("usuario") or "").strip(),
         "senha": str(combinado.get("senha") or ""),
+        "rota_login": str(combinado.get("rota_login") or "auto").strip().lower(),
         "url_login": str(combinado.get("url_login") or CREDENCIAIS_PADRAO["url_login"]),
+        "url_login_sso": str(combinado.get("url_login_sso") or CREDENCIAIS_PADRAO["url_login_sso"]),
         "url_lista_espera": str(combinado.get("url_lista_espera") or CREDENCIAIS_PADRAO["url_lista_espera"]),
     }
 
@@ -449,11 +474,26 @@ def loop_audio_alarme():
 
 def disparar_estado_alarme():
     global alarme_ativo
-    if not alarme_ativo:
-        log_msg("🚨 Iniciando Estado de Alarme!")
-        alarme_ativo = True
+    if alarme_ativo:
+        return
+
+    cfg = carregar_filtros()
+    quer_tela = cfg.get("alerta_tela", True)
+    quer_voz = cfg.get("alerta_voz", True)
+
+    if not quer_tela and not quer_voz:
+        log_msg("⚠️ Chamada detectada, mas alerta_tela e alerta_voz estão desligados no filtros.json — nada será exibido nem tocado.")
+        return
+
+    alarme_ativo = True
+    ativos = []
+    if quer_tela:
+        ativos.append("janela na tela")
         root.after(0, criar_janela_alarme)
+    if quer_voz:
+        ativos.append("voz")
         threading.Thread(target=loop_audio_alarme, daemon=True).start()
+    log_msg("🚨 Estado de alarme iniciado (" + " + ".join(ativos) + ").")
 
 # ==============================================================================
 # LÓGICA DO SELENIUM E BYPASS INVISÍVEL VIA JS
@@ -480,83 +520,251 @@ def iniciar_selenium():
         log_msg("ERRO: Não foi possível rastrear a janela do Chrome gerada.")
     
     try:
-        fazer_login()
+        if not fazer_login():
+            log_msg("🛑 Login não concluído — monitoramento não iniciado. Ajuste o credenciais.json e reinicie.")
+            return
         verificar_botao_chamar_senha()
     except Exception as e:
         log_msg(f"Erro Crítico no loop do Selenium: {e}")
 
-def fazer_login():
-    cred = carregar_credenciais()
-    usuario = cred["usuario"]
-    senha = cred["senha"]
-    url_login = cred["url_login"]
-    # json.dumps escapa aspas/barras: a senha pode ter apóstrofo ou aspas sem quebrar o JS
+# --- Helpers de login ------------------------------------------------------
+def _visivel(driver_alvo, seletores, timeout=12.0):
+    """Retorna o primeiro elemento visível entre os seletores CSS informados."""
+    fim = time.time() + timeout
+    while time.time() < fim:
+        for seletor in seletores:
+            try:
+                for elemento in driver_alvo.find_elements(By.CSS_SELECTOR, seletor):
+                    if elemento.is_displayed() and elemento.is_enabled():
+                        return elemento
+            except Exception:
+                continue
+        time.sleep(0.25)
+    return None
+
+
+def _texto_corpo(driver_alvo):
+    try:
+        return (driver_alvo.find_element(By.TAG_NAME, "body").text or "").lower()
+    except Exception:
+        return ""
+
+
+def _enviar_form(driver_alvo):
+    """Clica no botão de envio do formulário; se não achar, submete via JS."""
+    for seletor in (".sl-btn-primary", "button[type='submit']", "#Entrar", "input[type='submit']"):
+        try:
+            botao = driver_alvo.find_element(By.CSS_SELECTOR, seletor)
+            if botao.is_displayed():
+                botao.click()
+                return True
+        except Exception:
+            continue
+    try:
+        driver_alvo.execute_script("var f=document.querySelector('form'); if(f){f.submit();}")
+        return True
+    except Exception:
+        return False
+
+
+def _sessao_ativa(driver_alvo):
+    """True quando já saiu da tela de login e está dentro do /main/."""
+    try:
+        url = (driver_alvo.current_url or "").lower()
+    except Exception:
+        return False
+    return "/main/" in url and "/sso" not in url and "p=login" not in url
+
+
+def _credenciais_recusadas(texto):
+    """Mensagens de e-mail/senha errados — nunca tratar como conflito de sessão."""
+    return ("incorret" in texto) or ("não conferem" in texto) or ("nao conferem" in texto)
+
+
+def _confirmar_troca_sessao(driver_alvo, timeout=90.0):
+    """SSO: com outra máquina logada o form vem com input[name=disconnect].
+
+    Confirmar derruba a outra máquina (é assim que o SSO funciona). Se o input
+    não existir, apenas espera a sessão ficar ativa.
+    """
+    fim = time.time() + timeout
+    avisou = False
+    while time.time() < fim:
+        if _sessao_ativa(driver_alvo):
+            return True
+        try:
+            tem_disconnect = bool(driver_alvo.find_elements(By.CSS_SELECTOR, "input[name='disconnect']"))
+        except Exception:
+            tem_disconnect = False
+        if tem_disconnect:
+            if not avisou:
+                log_msg("⚠️ Sessão ativa em outra máquina. Confirmando a troca de sessão (a outra máquina será desconectada)...")
+                avisou = True
+            _enviar_form(driver_alvo)
+            time.sleep(2.0)
+            continue
+        if _credenciais_recusadas(_texto_corpo(driver_alvo)):
+            return False
+        time.sleep(1.0)
+    return _sessao_ativa(driver_alvo)
+
+
+def login_sso(usuario, senha, url_sso):
+    """Login na rota nova (/main/sso/): etapa e-mail -> etapa senha -> handshake."""
+    driver.get(url_sso)
+
+    campo_email = _visivel(driver, ["#User", "input[name='User']", "input[type='email']"], timeout=20)
+    if not campo_email:
+        return False, "campo de e-mail não apareceu na tela do SSO"
+    campo_email.clear()
+    campo_email.send_keys(usuario)
+    if not _enviar_form(driver):
+        return False, "não encontrei o botão 'Continuar' do SSO"
+    log_msg("SSO: e-mail enviado. Aguardando a etapa da senha...")
+
+    campo_senha = _visivel(
+        driver,
+        ["#password", "input[name='password']", "input[type='password']"],
+        timeout=25,
+    )
+    if not campo_senha:
+        texto = _texto_corpo(driver)
+        if _credenciais_recusadas(texto):
+            return False, "e-mail recusado na etapa 1 do SSO"
+        try:
+            if driver.find_elements(By.CSS_SELECTOR, "input[name='disconnect']"):
+                if _confirmar_troca_sessao(driver):
+                    return True, "sessão assumida direto no handshake do SSO"
+        except Exception:
+            pass
+        return False, "a etapa da senha não apareceu"
+
+    campo_senha.clear()
+    campo_senha.send_keys(senha)
+    if not _enviar_form(driver):
+        return False, "não encontrei o botão de enviar a senha no SSO"
+    log_msg("SSO: senha enviada. Validando com o servidor...")
+
+    if _confirmar_troca_sessao(driver, timeout=90):
+        return True, "login SSO concluído"
+    if _credenciais_recusadas(_texto_corpo(driver)):
+        return False, "senha incorreta no SSO"
+    return False, "o SSO não confirmou o login a tempo"
+
+
+def login_legado(usuario, senha, url_login):
+    """Login na rota antiga (?P=Login) mantendo o bypass de sessão dupla."""
     usuario_js = json.dumps(usuario)
     senha_js = json.dumps(senha)
 
-    while True:
-        log_msg("Acessando a página de login...")
-        driver.get(url_login)
-        try:
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "User")))
-            driver.execute_script(f"document.getElementById('User').value = {usuario_js};")
-            driver.execute_script(f"document.getElementById('password').value = {senha_js};")
-            driver.execute_script("document.getElementById('Entrar').click();")
-            log_msg("Login preenchido. Aguardando validação do servidor...")
+    driver.get(url_login)
+    try:
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "User")))
+    except TimeoutException:
+        return False, "formulário antigo não encontrado"
 
+    driver.execute_script(f"document.getElementById('User').value = {usuario_js};")
+    driver.execute_script(f"document.getElementById('password').value = {senha_js};")
+    driver.execute_script("document.getElementById('Entrar').click();")
+    log_msg("Login preenchido. Aguardando validação do servidor...")
+
+    try:
+        WebDriverWait(driver, 6).until(EC.presence_of_element_located(
+            (By.XPATH, "//*[contains(text(), 'Este usuário já está conectado em outra máquina.')]")))
+    except TimeoutException:
+        if _sessao_ativa(driver):
+            log_msg("✔️ Login direto bem-sucedido. Nenhuma barreira encontrada.")
+            return True, "login direto bem-sucedido"
+        if _credenciais_recusadas(_texto_corpo(driver)):
+            return False, "credenciais recusadas na rota antiga"
+        return _sessao_ativa(driver), "o Feegow não confirmou o login"
+
+    log_msg("⚠️ Sessão dupla detectada! Acionando metralhadora de Bypass Invisível...")
+
+    js_bypass = f"""
+    const user = {usuario_js};
+    const pass = {senha_js};
+    const actionUrl = window.location.href;
+
+    document.body.innerHTML = '<div style="display:flex; justify-content:center; align-items:center; height:100vh; background:#17a2b8; color:white; font-family:sans-serif; flex-direction:column;"><h2>Autenticando Acesso</h2><p>Bypass Invisível em andamento...</p></div>';
+
+    (async function() {{
+        let sucesso = false;
+        while (!sucesso) {{
+            try {{
+                let res = await fetch(actionUrl, {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+                    body: new URLSearchParams({{User: user, password: pass}})
+                }});
+                let html = await res.text();
+
+                if (html.includes('Este usuário já está conectado')) {{
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }} else {{
+                    sucesso = true;
+                    window.location.href = res.url || 'https://app.feegow.com/main/';
+                }}
+            }} catch (e) {{
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }}
+        }}
+    }})();
+    """
+    driver.execute_script(js_bypass)
+    log_msg("JS injetado. Fuzilando requisições em background...")
+
+    fim = time.time() + 300
+    while time.time() < fim:
+        if _sessao_ativa(driver):
+            log_msg("✔️ Bypass efetuado! Conexão estabelecida com sucesso.")
+            return True, "bypass concluído"
+        time.sleep(1.0)
+    return False, "o bypass não confirmou a sessão a tempo"
+
+
+def fazer_login():
+    """Autentica no Feegow tentando a rota SSO e a legada (configurável no JSON)."""
+    cred = carregar_credenciais()
+    usuario = cred["usuario"]
+    senha = cred["senha"]
+    rota = cred["rota_login"]
+    url_sso = cred["url_login_sso"]
+    url_legado = cred["url_login"]
+
+    if not usuario or usuario.lower() == CREDENCIAIS_PADRAO["usuario"] or not senha:
+        log_msg("🛑 credenciais.json ainda está com os dados de exemplo. Corrija antes de continuar.")
+        return False
+
+    if rota in ("sso", "nova", "novo"):
+        rotas = [("SSO", login_sso, url_sso)]
+    elif rota in ("legado", "legacy", "antigo", "antiga"):
+        rotas = [("LEGADO", login_legado, url_legado)]
+    else:
+        rotas = [("SSO", login_sso, url_sso), ("LEGADO", login_legado, url_legado)]
+
+    espera = 5.0
+    for tentativa in range(1, 21):
+        for nome_rota, funcao_login, url in rotas:
+            log_msg(f"🔐 Login pela rota {nome_rota} (tentativa {tentativa}): {url}")
             try:
-                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Este usuário já está conectado em outra máquina.')]")))
+                ok, motivo = funcao_login(usuario, senha, url)
+            except Exception as e:
+                ok, motivo = False, f"erro inesperado: {e}"
+            if ok:
+                log_msg(f"✔️ Login OK pela rota {nome_rota} ({motivo}).")
+                return True
+            log_msg(f"⚠️ Rota {nome_rota} falhou: {motivo}")
+            if ("credenciais" in motivo or "senha incorreta" in motivo
+                    or "e-mail recusado" in motivo):
+                log_msg("🛑 Credenciais recusadas pelo Feegow. Confira usuario/senha no credenciais.json — "
+                        "parando para não travar a conta.")
+                return False
+        time.sleep(espera)
+        espera = min(espera * 1.8, 30.0)
 
-                log_msg("⚠️ Sessão dupla detectada! Acionando metralhadora de Bypass Invisível...")
-
-                js_bypass = f"""
-                const user = {usuario_js};
-                const pass = {senha_js};
-                const actionUrl = window.location.href;
-
-                document.body.innerHTML = '<div style="display:flex; justify-content:center; align-items:center; height:100vh; background:#17a2b8; color:white; font-family:sans-serif; flex-direction:column;"><h2>Autenticando Acesso</h2><p>Bypass Invisível em andamento...</p></div>';
-
-                (async function() {{
-                    let sucesso = false;
-                    while (!sucesso) {{
-                        try {{
-                            let res = await fetch(actionUrl, {{
-                                method: 'POST',
-                                headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
-                                body: new URLSearchParams({{User: user, password: pass}})
-                            }});
-                            let html = await res.text();
-                            
-                            if (html.includes('Este usuário já está conectado')) {{
-                                await new Promise(resolve => setTimeout(resolve, 50));
-                            }} else {{
-                                sucesso = true;
-                                window.location.href = res.url || 'https://app.feegow.com/main/';
-                            }}
-                        }} catch (e) {{
-                            await new Promise(resolve => setTimeout(resolve, 500));
-                        }}
-                    }}
-                }})();
-                """
-                driver.execute_script(js_bypass)
-                
-                log_msg("JS injetado. Fuzilando requisições em background...")
-                WebDriverWait(driver, 300).until(EC.presence_of_element_located((By.CLASS_NAME, "callTicketBtn")))
-                log_msg("✔️ Bypass efetuado! Conexão estabelecida com sucesso.")
-                break
-
-            except TimeoutException:
-                try:
-                    WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CLASS_NAME, "callTicketBtn")))
-                    log_msg("✔️ Login direto bem-sucedido. Nenhuma barreira encontrada.")
-                    break
-                except TimeoutException:
-                    log_msg("Demora inesperada na resposta do Feegow. Reiniciando o processo...")
-                    continue
-        except Exception as e:
-            log_msg("Falha ao injetar os dados de login. Retentando em 2 segundos...")
-            time.sleep(2)
+    log_msg("🛑 Não foi possível autenticar após várias tentativas.")
+    return False
 
 def fechar_modal():
     try:
