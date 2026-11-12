@@ -20,7 +20,10 @@ from pystray import MenuItem as item
 from PIL import Image, ImageDraw
 
 from selenium import webdriver
-from webdriver_manager.chrome import ChromeDriverManager
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except Exception:  # pacote opcional: só é usado se não houver chromedriver local
+    ChromeDriverManager = None
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -537,6 +540,57 @@ def disparar_estado_alarme():
 # ==============================================================================
 # LÓGICA DO SELENIUM E BYPASS INVISÍVEL VIA JS
 # ==============================================================================
+def _achar_chromedriver():
+    """Procura um chromedriver.exe local antes de tentar baixar qualquer coisa.
+
+    Ordem: pasta do script -> drivers\\ -> PATH -> caches do Selenium Manager e
+    do webdriver_manager. Evita depender de internet/download no arranque.
+    """
+    candidatos = [
+        os.path.join(PASTA_SCRIPT, "chromedriver.exe"),
+        os.path.join(PASTA_SCRIPT, "drivers", "chromedriver.exe"),
+        os.path.join(PASTA_SCRIPT, "chromedriver", "chromedriver.exe"),
+    ]
+    do_path = shutil.which("chromedriver")
+    if do_path:
+        candidatos.append(do_path)
+
+    raizes = [
+        os.path.join(os.path.expanduser("~"), ".cache", "selenium"),
+        os.path.join(os.path.expanduser("~"), ".wdm"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "WebDriver"),
+    ]
+    for raiz in raizes:
+        if not raiz or not os.path.isdir(raiz):
+            continue
+        for pasta, _sub, arquivos in os.walk(raiz):
+            if "chromedriver.exe" in arquivos:
+                candidatos.append(os.path.join(pasta, "chromedriver.exe"))
+
+    for caminho in candidatos:
+        if caminho and os.path.isfile(caminho):
+            return caminho
+    return None
+
+
+def criar_driver_chrome(options):
+    """Cria o webdriver.Chrome priorizando o chromedriver local.
+
+    Só tenta baixar da internet se não houver nenhum chromedriver na máquina.
+    """
+    achado = _achar_chromedriver()
+    if achado:
+        log_msg(f"🚗 chromedriver local: {achado}")
+        return webdriver.Chrome(service=Service(executable_path=achado), options=options)
+
+    if ChromeDriverManager is None:
+        raise RuntimeError(
+            "nenhum chromedriver.exe encontrado e o pacote webdriver-manager não está instalado"
+        )
+    log_msg("🚗 Nenhum chromedriver local — tentando baixar (webdriver_manager)...")
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+
 def iniciar_selenium():
     global driver, CHROME_HWND
     log_msg("Iniciando WebDriver no 'limbo' (fora da tela)...")
@@ -548,7 +602,16 @@ def iniciar_selenium():
     options.add_argument("--log-level=3")
     options.add_argument("--window-position=-10000,-10000") 
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    try:
+        driver = criar_driver_chrome(options)
+    except Exception as e:
+        log_msg(f"🛑 O WebDriver não iniciou: {type(e).__name__}: {e}")
+        log_msg("   Baixe o chromedriver da sua versão do Chrome em "
+                "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
+                f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
+        log_msg("   O monitoramento NÃO foi iniciado. Feche e abra de novo depois de colocar o arquivo.")
+        return
+
     time.sleep(2)
     CHROME_HWND = capturar_hwnd_pelo_pid()
     

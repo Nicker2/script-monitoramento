@@ -269,7 +269,15 @@ Bibliotecas Python (todas no `requirements.txt`):
    pip install -r requirements.txt
    ```
 
-3. Rode o script uma vez para ele criar os arquivos de configuração:
+3. Coloque o **chromedriver** na mesma pasta do `SCRIPT_EXPLICA.py`:
+
+   - Abra <https://googlechromelabs.github.io/chrome-for-testing/>
+   - Escolha a versão que bate com o seu Chrome (os três primeiros números, ex.: `157.0.8103.51`)
+   - Baixe `chromedriver-win64.zip`, extraia e copie `chromedriver.exe` para a pasta do script
+
+   O script procura nessa ordem: **pasta do script** → `drivers\` → PATH → cache do Selenium Manager → cache do `webdriver_manager`. Só se não achar nenhum ele tenta baixar — e aí a máquina precisa de acesso liberado ao `googlechromelabs.github.io`.
+
+4. Rode o script uma vez para ele criar os arquivos de configuração:
 
    ```bash
    python SCRIPT_EXPLICA.py
@@ -352,6 +360,8 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 | O login não passa | Confira `usuario`/`senha` no `credenciais.json`. O log avisa se ainda está com os dados de exemplo. |
 | "Usuário já conectado em outra máquina" | É esperado: o script cai no bypass invisível automaticamente e assume a sessão. |
 | O programa não acha o Chrome | Feche as janelas do Chrome abertas pelo Selenium e reinicie (o rastreamento é por PID). |
+| `Could not reach host` / `Connection reset` ao iniciar | O `webdriver_manager` não conseguiu baixar o chromedriver (rede/firewall/proxy). Baixe manualmente em <https://googlechromelabs.github.io/chrome-for-testing/> e salve como `chromedriver.exe` na pasta do script — aí ele não precisa de internet para isso. |
+| `Unable to obtain driver for chrome` | Mesma causa acima: chromedriver ausente. A mensagem nova do script já mostra a pasta onde salvar o arquivo. |
 
 ---
 
@@ -365,6 +375,12 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### chromedriver local (não depende de download)
+
+- O script passou a procurar o **chromedriver.exe** na própria pasta (depois `drivers\`, PATH, cache do Selenium Manager e do `webdriver_manager`) antes de tentar baixar. Sem isso, uma rede que bloqueia o `googlechromelabs.github.io` derrubava o script no arranque com `ConnectionResetError` / `Could not reach host`.
+- Se o WebDriver não iniciar, o erro agora aparece no log do painel com a pasta exata onde salvar o `chromedriver.exe` — antes a thread morria com traceback e o programa ficava "vivo" sem monitorar nada.
+- `webdriver_manager` virou dependência opcional (só entra no fallback).
 
 ### Filtros por lista (alertar × ignorar)
 
