@@ -1,0 +1,26 @@
+{
+  "_comentario": "Edite este arquivo e salve: o script recarrega sozinho, sem reiniciar. blacklist = IGNORA a chamada; whitelist = DISPARA o alarme mesmo que tambem case com a blacklist; termo_gatilho = sigla do botao (ex.: MC); comparacao = 'contem' ou 'exata'.",
+  "termo_gatilho": "MC",
+  "comparacao": "contem",
+  "blacklist": [
+    "CONSULTA",
+    "EXAME",
+    "PRIORITÁRIA",
+    "AGENDAMENTOS",
+    "RETORNO",
+    "R2",
+    "DILATAÇÃO",
+    "CMC",
+    "CMM",
+    "FENIL",
+    "RECEPÇÃO",
+    "SUS",
+    "ESPECIALIDADES",
+    "CIRURGIA",
+    "LENTES",
+    "AUTO REFRATOR"
+  ],
+  "whitelist": [],
+  "pausa_minutos": 15,
+  "intervalo_busca_segundos": 10
+}

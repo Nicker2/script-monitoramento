@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .env
 .env.*
+
+# Credenciais reais NUNCA vão para o repositório.
+# O script cria credenciais.json sozinho (a partir de credenciais.exemplo.json) na 1ª execução.
+credenciais.json

@@ -6,6 +6,7 @@ Script em Python que usa Selenium para monitorar e clicar automaticamente no bot
 
 - [Descrição](#descrição)
 - [Arquivos e Descrições](#arquivos-e-descricoes)
+- [Arquivos de Configuração](#arquivos-de-configuração)
 - [Pré-requisitos](#pré-requisitos)
 - [Instalação](#instalação)
 - [Uso](#uso)
@@ -57,6 +58,51 @@ Este arquivo de log é utilizado para armazenar os erros que ocorrem durante a e
 ### **DEBUG_EXECUTAR_EXPLICA.BAT**
 **Descrição**:  
 Este arquivo batch é semelhante ao `executar_iniciar_explica.BAT`, mas é utilizado para fins de depuração. Ele também executa o script `SCRIPT_EXPLICA.py` de maneira silenciosa e reinicia o processo em caso de erro, mas com uma função extra de depuração, como exibir mensagens de erro diretamente no console.
+
+---
+
+## Arquivos de Configuração
+
+As regras de filtro e as credenciais ficam **fora do código**, em arquivos JSON. Se eles não existirem, o script **cria automaticamente** na primeira execução (com os valores padrão) — é só abrir e editar.
+
+### **filtros.json**
+Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo, sem reiniciar o programa.
+
+```json
+{
+  "termo_gatilho": "MC",
+  "comparacao": "contem",
+  "blacklist": ["CONSULTA", "EXAME", "PRIORITÁRIA", "..."],
+  "whitelist": ["MC URGENTE"],
+  "pausa_minutos": 15,
+  "intervalo_busca_segundos": 10
+}
+```
+
+| Campo | O que faz |
+| :--- | :--- |
+| `termo_gatilho` | Sigla que o botão precisa conter para ser analisado (padrão `MC`). |
+| `comparacao` | `contem` (padrão) ou `exata` — como a blacklist/whitelist casa com o texto. |
+| `blacklist` | Se casar, a chamada é **ignorada** (falso positivo, ex.: `CONSULTA`). |
+| `whitelist` | Se casar, **dispara o alarme mesmo que também case com a blacklist** (tem prioridade). |
+| `pausa_minutos` | Quanto tempo o botão "CIENTE" silencia os alertas (padrão 15). |
+| `intervalo_busca_segundos` | Espera entre uma verificação e outra na lista de espera (padrão 10). |
+
+> A comparação ignora **acentos e maiúsculas/minúsculas** (`PRIORITARIA` casa com `PRIORITÁRIA`). Chaves começando com `_` (ex.: `_comentario`) são ignoradas.
+
+### **credenciais.json**
+Usuário e senha do Feegow. **Não é versionado** (está no `.gitignore`) — o script cria na primeira execução a partir de `credenciais.exemplo.json` e avisa no log até você preencher.
+
+```json
+{
+  "usuario": "seu.usuario@clinica.com.br",
+  "senha": "sua-senha",
+  "url_login": "https://app.feegow.com/main/?P=Login",
+  "url_lista_espera": "https://app.feegow.com/pre-v8/?P=ListaEspera&Pers=1"
+}
+```
+
+> ⚠️ Nunca faça commit do `credenciais.json` com a senha real. O repositório é público.
 
 ---
 

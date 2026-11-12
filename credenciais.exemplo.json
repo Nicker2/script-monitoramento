@@ -1,0 +1,7 @@
+{
+  "_comentario": "MODELO. Copie para credenciais.json (o script faz isso sozinho na primeira execucao) e preencha com os seus dados. NUNCA envie credenciais.json para o GitHub.",
+  "usuario": "exemplo@exemplo.com",
+  "senha": "exemplo",
+  "url_login": "https://app.feegow.com/main/?P=Login",
+  "url_lista_espera": "https://app.feegow.com/pre-v8/?P=ListaEspera&Pers=1"
+}
