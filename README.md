@@ -393,6 +393,7 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 | `Could not reach host` / `Connection reset` ao iniciar | O `webdriver_manager` não conseguiu baixar o chromedriver (rede/firewall/proxy). Baixe manualmente em <https://googlechromelabs.github.io/chrome-for-testing/> e salve como `chromedriver.exe` na pasta do script — aí ele não precisa de internet para isso. |
 | `Unable to obtain driver for chrome` | Mesma causa acima: chromedriver ausente. A mensagem nova do script já mostra a pasta onde salvar o arquivo. |
 | Ctrl+C no console mostrava traceback e deixava o Chrome aberto | Corrigido: `KeyboardInterrupt` é tratado, o Chrome é fechado e o áudio temporário apagado (`⌨️ Ctrl+C detectado — encerrando...`). |
+| Chrome abrindo com **"Restaurar páginas?"** | O script apaga os arquivos de sessão do perfil (`Last Session`/`Current Session`/`Sessions`), marca `exit_type = Normal` no `Preferences` e passa `--hide-crash-restore-bubble` / `--disable-session-crashed-bubble`. |
 
 ---
 
@@ -436,6 +437,15 @@ Regras de segurança:
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Sem o balão "Restaurar páginas?"
+
+- Depois de uma execução morta na força, o Chrome abria o balão **"Restaurar páginas?"** por cima da lista de espera (e ele rouba cliques).
+- Três medidas, no arranque **e** no encerramento:
+  1. `_limpar_sessao_antiga()` apaga `Default\Current Session`, `Current Tabs`, `Last Session`, `Last Tabs` e a pasta `Sessions` — é deles que o Chrome tira a restauração.
+  2. `_marcar_perfil_limpo()` escreve `profile.exit_type = "Normal"` e `exited_cleanly = true` em `Default\Preferences`.
+  3. Flags: `--no-first-run`, `--no-default-browser-check`, `--hide-crash-restore-bubble`, `--disable-session-crashed-bubble`.
+- Observação: o `exit_type` volta a "Crashed" quando o processo é morto na força — normal. Como os arquivos de sessão são apagados em todo arranque, o balão não volta.
 
 ### Encerramento limpo (Ctrl+C e menu da bandeja)
 

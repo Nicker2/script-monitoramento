@@ -859,6 +859,57 @@ def _encerrar_instancias_antigas(perfil):
     return mortos
 
 
+def _marcar_perfil_limpo(perfil):
+    """Marca o perfil como fechado corretamente.
+
+    Sem isso, depois de uma execução morta na força o Chrome abre o balão
+    "Restaurar páginas?" por cima da lista de espera.
+    """
+    if not perfil:
+        return
+    caminho = os.path.join(perfil, "Default", "Preferences")
+    if not os.path.isfile(caminho):
+        return
+    try:
+        with open(caminho, "r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+        if not isinstance(dados, dict):
+            return
+        config_perfil = dados.get("profile")
+        if not isinstance(config_perfil, dict):
+            config_perfil = {}
+        config_perfil["exit_type"] = "Normal"
+        config_perfil["exited_cleanly"] = True
+        dados["profile"] = config_perfil
+
+        temporario = caminho + ".tmp"
+        with open(temporario, "w", encoding="utf-8") as arquivo:
+            json.dump(dados, arquivo)
+        os.replace(temporario, caminho)
+    except Exception:
+        pass
+
+
+def _limpar_sessao_antiga(perfil):
+    """Apaga os arquivos de sessão do perfil (fonte do 'Restaurar páginas?')."""
+    if not perfil:
+        return
+    default = os.path.join(perfil, "Default")
+    for nome in ("Current Session", "Current Tabs", "Last Session", "Last Tabs"):
+        try:
+            caminho = os.path.join(default, nome)
+            if os.path.isfile(caminho):
+                os.remove(caminho)
+        except Exception:
+            pass
+    pasta_sessoes = os.path.join(default, "Sessions")
+    if os.path.isdir(pasta_sessoes):
+        try:
+            shutil.rmtree(pasta_sessoes)
+        except Exception:
+            pass
+
+
 def _pasta_perfil_chrome():
     """Perfil fixo do Chrome do monitoramento.
 
@@ -943,13 +994,25 @@ def iniciar_selenium():
         if perfil_chrome:
             # perfil fixo + Chrome órfão de execução anterior = pasta travada
             _encerrar_instancias_antigas(perfil_chrome)
+            _limpar_sessao_antiga(perfil_chrome)
+            _marcar_perfil_limpo(perfil_chrome)
 
         def montar_options(com_perfil=True):
             opcoes = webdriver.ChromeOptions()
             opcoes.add_experimental_option(
                 "prefs", {"profile.default_content_setting_values.notifications": 2})
-            for argumento in ("--disable-gpu", "--no-sandbox", "--log-level=3",
-                              "--window-position=-10000,-10000"):
+            for argumento in (
+                "--disable-gpu",
+                "--no-sandbox",
+                "--log-level=3",
+                "--window-position=-10000,-10000",
+                # sem "Restaurar páginas?" e sem telas de primeira execução
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--hide-crash-restore-bubble",
+                "--disable-session-crashed-bubble",
+                "--disable-infobars",
+            ):
                 opcoes.add_argument(argumento)
             if com_perfil and perfil_chrome:
                 opcoes.add_argument(f"--user-data-dir={perfil_chrome}")
@@ -1447,6 +1510,13 @@ def encerrar_sistema():
             fechador = threading.Thread(target=driver.quit, daemon=True)
             fechador.start()
             fechador.join(timeout=5)
+    except Exception:
+        pass
+
+    try:
+        # deixa o perfil pronto para o próximo início (sem "Restaurar páginas?")
+        _limpar_sessao_antiga(_pasta_perfil_chrome())
+        _marcar_perfil_limpo(_pasta_perfil_chrome())
     except Exception:
         pass
 
