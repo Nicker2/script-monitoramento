@@ -1,0 +1,7 @@
+selenium
+webdriver-manager
+gTTS
+pygame
+pystray
+Pillow
+psutil

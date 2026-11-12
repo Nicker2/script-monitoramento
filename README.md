@@ -1,15 +1,20 @@
 # Monitoramento de Senha no Feegow
 
-Script em Python que usa Selenium para monitorar e clicar automaticamente no botão "Chamar senha" no sistema Feegow. Ele verifica se há uma senha específica relacionada a explicações médicas ("EC") e, caso detectado, emite um alerta sonoro com voz sintetizada.
+Script em Python que usa Selenium para monitorar e clicar automaticamente no botão "Chamar senha" do sistema Feegow. Quando aparece uma senha de **marcação cirúrgica (`MC`)** — e ela não é um falso positivo — o script dispara um alarme sonoro com voz sintetizada e uma janela piscante na tela.
+
+As regras de filtro e as credenciais ficam em arquivos **JSON separados** (`filtros.json` e `credenciais.json`), então dá para mudar o comportamento sem tocar no código.
 
 ## Índice
 
 - [Descrição](#descrição)
+- [Como Funciona](#como-funciona)
 - [Arquivos e Descrições](#arquivos-e-descricoes)
 - [Arquivos de Configuração](#arquivos-de-configuração)
 - [Pré-requisitos](#pré-requisitos)
 - [Instalação](#instalação)
 - [Uso](#uso)
+- [Solução de Problemas](#solução-de-problemas)
+- [Histórico de Alterações](#histórico-de-alterações)
 - [Contribuição](#contribuição)
 - [Licença](#licença)
 - [Autor](#autor)
@@ -18,16 +23,70 @@ Script em Python que usa Selenium para monitorar e clicar automaticamente no bot
 
 ## Descrição
 
-Este script automatiza o monitoramento da página de lista de espera no sistema Feegow, clicando no botão "Chamar senha" e verificando se existe um botão com a sigla "EC" no modal. Quando encontrado, o script emite um alerta sonoro com a mensagem "Atenção, Senha de Explicação". Esse alerta utiliza voz sintetizada em português. O script foi configurado para operar em modo headless, facilitando a execução em segundo plano.
+Este script automatiza o monitoramento da página de lista de espera do Feegow: clica no botão "Chamar senha", lê o texto do botão que aparece no modal e decide se aquilo é uma marcação cirúrgica de verdade.
+
+Quando é, dispara dois alertas ao mesmo tempo:
+
+- **Sonoro** — mensagem falada em português ("Atenção. Senha de marcação cirúrgica."), tocada em **todos os dispositivos de áudio** da máquina (caixa, TV, monitor com som).
+- **Visual** — janela vermelha piscando no centro da tela com o botão **CIENTE**.
+
+Clicando em **CIENTE**, a chamada é assumida e os alertas ficam silenciados pelo tempo definido em `pausa_minutos` (padrão 15). Se a senha desaparecer da fila sem ninguém clicar, o alarme se desarma sozinho.
+
+O Chrome roda **fora da tela** (posição `-10000,-10000`) com a janela rastreada por PID: ele fica no "limbo", sem aparecer na barra de tarefas, e pode ser exibido a qualquer momento pelo ícone da bandeja do Windows.
+
+---
+
+## Como Funciona
+
+```
+1. Abre o Chrome fora da tela e faz login no Feegow
+   (se cair em "usuário já conectado em outra máquina", roda o bypass)
+             |
+2. Entra na Lista de Espera e clica em "Chamar senha"
+             |
+3. Lê o texto do botão que aparece no modal
+             |
+4. Decide o que fazer:
+      whitelist casou?  -> DISPARA o alarme
+      blacklist casou?  -> IGNORA (falso positivo)
+      nada casou?       -> DISPARA o alarme
+             |
+5. Espera intervalo_busca_segundos e volta para o passo 2
+```
+
+A comparação **ignora acentos e maiúsculas/minúsculas**: `PRIORITARIA` no `filtros.json` casa com `PRIORITÁRIA` na tela.
 
 ---
 
 ## Arquivos e Descrições
 
 ### **SCRIPT_EXPLICA.py**
-**Descrição**:  
-Este é o script principal que contém o código responsável por realizar a verificação e execução de tarefas automáticas. Ele lida com a interação com os elementos da página, como encontrar o botão "EC" e verificar se o texto "RECEPÇÃO" está presente, além de realizar o acionamento do alerta de voz quando necessário.
+**Descrição**:
+Script principal. Faz o login no Feegow pelo Selenium, percorre a lista de espera clicando em "Chamar senha", lê o texto do botão da senha e aplica as regras do `filtros.json` para decidir se dispara o alarme. Também cuida da janela de alerta (Tkinter), do áudio sintetizado (gTTS + pygame), do ícone na bandeja e do painel de logs.
 
+---
+
+### **filtros.json**
+**Descrição**:
+Blacklist, whitelist e tempos. É recarregado **sozinho** ao salvar — não precisa reiniciar o programa. Se o arquivo não existir, o script cria na primeira execução. Detalhes na seção [Arquivos de Configuração](#arquivos-de-configuração).
+
+---
+
+### **credenciais.json**
+**Descrição**:
+Usuário, senha e URLs do Feegow. **Não é versionado** (fica no `.gitignore`, porque o repositório é público). Criado automaticamente na primeira execução a partir do `credenciais.exemplo.json`.
+
+---
+
+### **credenciais.exemplo.json**
+**Descrição**:
+Modelo versionado do arquivo de credenciais, só com valores de exemplo (`exemplo@exemplo.com` / `exemplo`). Serve de referência para montar o seu `credenciais.json`.
+
+---
+
+### **requirements.txt**
+**Descrição**:
+Lista das bibliotecas Python usadas (selenium, webdriver-manager, gTTS, pygame, pystray, Pillow e psutil) para instalar tudo com um único comando.
 
 ---
 
@@ -108,14 +167,22 @@ Usuário e senha do Feegow. **Não é versionado** (está no `.gitignore`) — o
 
 ## Pré-requisitos
 
-Antes de executar o script, você precisa ter o seguinte instalado no seu sistema:
+Antes de executar o script, você precisa ter instalado:
 
 - [Python 3.x](https://www.python.org/downloads/)
-- [ChromeDriver](https://sites.google.com/chromium.org/driver/) (pode ser instalado automaticamente com o `webdriver_manager`)
-- Bibliotecas Python necessárias:
-  - `selenium`
-  - `webdriver_manager`
-  - `pyttsx3`
+- Google Chrome atualizado
+- [ChromeDriver](https://sites.google.com/chromium.org/driver/) — o `webdriver-manager` baixa a versão certa automaticamente
+- Conexão com a internet (o áudio da voz é gerado na hora pelo Google TTS)
+
+Bibliotecas Python (todas no `requirements.txt`):
+
+- `selenium` — automação do navegador
+- `webdriver-manager` — baixa e gerencia o ChromeDriver
+- `gTTS` — gera o áudio da voz sintetizada
+- `pygame` — toca o áudio em todos os dispositivos de saída
+- `pystray` — ícone na bandeja do Windows
+- `Pillow` — desenha o ícone da bandeja
+- `psutil` — rastreia o processo do Chrome pela janela
 
 ---
 
@@ -124,59 +191,117 @@ Antes de executar o script, você precisa ter o seguinte instalado no seu sistem
 1. Clone este repositório:
 
    ```bash
-   git clone https://github.com/seuusuario/MonitoramentoSenhaFeegow.git
-   cd MonitoramentoSenhaFeegow
+   git clone https://github.com/Nicker2/script-monitoramento.git
+   cd script-monitoramento
    ```
 
-2. Instale as dependências do Python:
+2. Instale as dependências:
 
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Verifique se o ChromeDriver está instalado e atualizado para a versão do Chrome em seu sistema. O script usa o `webdriver_manager` para instalar automaticamente a versão correta do ChromeDriver.
+3. Rode o script uma vez para ele criar os arquivos de configuração:
+
+   ```bash
+   python SCRIPT_EXPLICA.py
+   ```
+
+   Na primeira execução ele cria `filtros.json` e `credenciais.json` na pasta do script.
 
 ---
 
 ## Uso
 
-1. **Configuração das credenciais**:  
-   Antes de executar qualquer script, configure as credenciais de login no script `SCRIPT_EXPLICA.py`, substituindo os valores `exemplo@dominio.com` e `senha_exemplo` pelas suas credenciais do Feegow:
+### 1. Preencher as credenciais
 
-   ```python
-   driver.execute_script("document.getElementById('User').value = 'exemplo@dominio.com';")
-   driver.execute_script("document.getElementById('password').value = 'senha_exemplo';")
-   ```
+Abra o **`credenciais.json`** criado na pasta do script e troque os valores de exemplo:
 
-2. **Execução do Script**:  
-   O processo de execução dos scripts pode ser feito de duas formas, dependendo do seu objetivo:
+```json
+{
+  "usuario": "seu.usuario@clinica.com.br",
+  "senha": "sua-senha"
+}
+```
 
-   - **Modo normal (visível)**: Execute o script principal `SCRIPT_EXPLICA.py` diretamente:
+Enquanto os dados de exemplo estiverem lá, o log avisa:
 
-     ```bash
-     python SCRIPT_EXPLICA.py
-     ```
+```
+⚠️ ATENÇÃO: credenciais.json está com os dados de EXEMPLO. Preencha usuário e senha.
+```
 
-     O script acessará automaticamente a página de login do Feegow, fará o login, navegará até a página de lista de espera e começará a monitorar o botão "Chamar senha". Quando o botão "EC" for encontrado, ele acionará um alerta de voz.
+### 2. (Opcional) Ajustar os filtros
 
-   - **Modo invisível**: Para rodar o script de forma oculta (sem abrir o terminal), você deve usar o arquivo batch `executar_iniciar_explica.BAT`. Este arquivo irá iniciar automaticamente o script Python invisível, rodando em segundo plano:
+Abra o **`filtros.json`** e ajuste conforme a sua realidade:
 
-     - Execute o arquivo `.BAT`:
+- Quer **ignorar** mais tipos de chamada? Acrescente palavras na `blacklist`.
+- Quer **priorizar** um caso que cairia na blacklist? Coloque na `whitelist`.
+- Quer que o "CIENTE" silencie por mais tempo? Aumente `pausa_minutos`.
 
-       ```bash
-       executar_iniciar_explica.BAT
-       ```
+Basta salvar o arquivo — o script recarrega sozinho.
 
-     Isso fará com que o script seja executado sem abrir uma janela do terminal. Caso haja erro na execução, o script será reiniciado automaticamente.
+### 3. Executar
 
-3. **Verificação de erros**:  
-   Se o script for executado de forma invisível, o arquivo `error_log.txt` registrará qualquer erro ocorrido durante o processo. Caso algo dê errado, você pode verificar o log para diagnosticar o problema.
+- **Modo normal (console visível)** — melhor para testar:
 
-4. **Depuração**:  
-   Se você precisar depurar o processo, utilize o arquivo `DEBUG_EXECUTAR_EXPLICA.BAT`. Ele é semelhante ao `executar_iniciar_explica.BAT`, mas com a funcionalidade de mostrar as mensagens de erro no console durante a execução.
+  ```bash
+  python SCRIPT_EXPLICA.py
+  ```
 
-5. **Reinício automático**:  
-   Caso o script falhe, tanto no modo visível quanto invisível, ele será reiniciado automaticamente após 5 segundos de erro, garantindo que o monitoramento seja contínuo.
+  O script faz login, vai para a lista de espera e começa a monitorar. Ao detectar uma marcação cirúrgica válida, dispara o alarme.
+
+- **Modo invisível** — para o dia a dia, sem janela de terminal:
+
+  ```bash
+  executar_iniciar_explica.BAT
+  ```
+
+  O Chrome roda fora da tela e o programa fica no ícone da bandeja (perto do relógio).
+
+### 4. Bandeja do Windows
+
+- **Clique no ícone** → mostra/oculta o painel e o navegador.
+- **Botão direito → Encerrar Sistema** → fecha o Chrome, apaga o áudio temporário e sai.
+
+### 5. Verificação de erros
+
+No modo invisível, qualquer falha vai para `error_log.txt`. Se precisar ver a mensagem no console, use `DEBUG_EXECUTAR_EXPLICA.BAT`.
+
+### 6. Reinício automático
+
+Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitoramento não fica parado.
+
+---
+
+## Solução de Problemas
+
+| Sintoma | Causa provável / solução |
+| :--- | :--- |
+| O alarme não toca | Falta internet (o gTTS gera o áudio na hora). O log mostra "Falha ao gerar áudio de emergência". O alarme visual continua piscando. |
+| Toca em um dispositivo só | Confira em "Testes de Hardware de Áudio" no painel se todos os dispositivos listados respondem ao "Testar". |
+| Uma chamada real está sendo ignorada | Alguma palavra da `blacklist` está no texto do botão. Veja no log a linha `🔎 Botão '...' -> blacklist ('...')` e ajuste o `filtros.json`. |
+| Uma chamada de outro tipo está disparando | Acrescente a palavra à `blacklist` (ou use `"comparacao": "exata"`). |
+| O login não passa | Confira `usuario`/`senha` no `credenciais.json`. O log avisa se ainda está com os dados de exemplo. |
+| "Usuário já conectado em outra máquina" | É esperado: o script cai no bypass invisível automaticamente e assume a sessão. |
+| O programa não acha o Chrome | Feche as janelas do Chrome abertas pelo Selenium e reinicie (o rastreamento é por PID). |
+
+---
+
+## Histórico de Alterações
+
+### Configuração externa em JSON (atual)
+
+- **`filtros.json`**: blacklist, whitelist (com prioridade sobre a blacklist), termo gatilho, modo de comparação, tempo de pausa e intervalo de busca — tudo fora do código e com recarga automática ao salvar.
+- **`credenciais.json`**: usuário, senha e URLs fora do código, ignorado pelo git (só o modelo `credenciais.exemplo.json` é versionado).
+- Os dois arquivos são **criados automaticamente** se não existirem; JSON inválido não derruba o script.
+- A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
+- O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
+- Adicionado `requirements.txt` e README atualizado.
+
+### Versão anterior
+
+- Blacklist fixa dentro do `SCRIPT_EXPLICA.py` (`BLACKLIST_SENHAS`), sem whitelist.
+- Usuário e senha (`exemplo@exemplo.com` / `exemplo`) escritos direto no código.
 
 ---
 
@@ -265,7 +390,7 @@ Após isso, a equipe do projeto irá revisar suas mudanças e, se tudo estiver c
 
 ## Licença
 
-Este projeto é licenciado sob a Licença MIT - veja o arquivo [LICENSE.md](LICENSE.md) para detalhes.
+Este projeto é licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
 
 ---
 
