@@ -4,6 +4,16 @@ Script em Python que usa Selenium para monitorar e clicar automaticamente no bot
 
 As regras de filtro e as credenciais ficam em arquivos **JSON separados** (`filtros.json` e `credenciais.json`), então dá para mudar o comportamento sem tocar no código.
 
+> ## ⬇️ Baixar pronto para usar (sem instalar Python)
+>
+> **[MonitorFeegow.exe — última versão](https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe)**
+>
+> Baixe, salve numa pasta própria (ex.: `C:\MonitorFeegow\`) e dê duplo clique. Na primeira execução ele cria `filtros.json` e `credenciais.json` ao lado do executável e pede o login.
+>
+> Requisitos: Windows 10/11 64 bits e Google Chrome instalado. O ChromeDriver é baixado sozinho conforme a versão do seu Chrome.
+>
+> Todas as versões: <https://github.com/Nicker2/script-monitoramento/releases>
+
 ## Índice
 
 - [Descrição](#descrição)
@@ -516,6 +526,7 @@ Regras de segurança:
 
 ### Versão compilada (.exe com Nuitka)
 
+- Release **v1.0.0** publicada com o `MonitorFeegow.exe` anexado — link direto e fixo: `https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe`.
 - `compilar.bat` gera `dist\MonitorFeegow.exe` com um duplo clique — sem precisar de Visual Studio (o MinGW é baixado automaticamente com `--mingw64`).
 - `_pasta_do_programa()` detecta o modo compilado (`__compiled__` / `NUITKA_ONEFILE_BINARY`) e usa a pasta do **executável**, não a pasta temporária de extração do `--onefile` — antes os JSONs seriam criados no TEMP e apagados ao fechar.
 - `garantir_dependencias()` sai na hora quando compilado (as dependências já estão embutidas).
