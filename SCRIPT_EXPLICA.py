@@ -169,6 +169,9 @@ FILTROS_PADRAO = {
     "intervalo_busca_segundos": 10,
     "alerta_tela": True,
     "alerta_voz": True,
+    "alarme_max_segundos": 120,
+    "intervalo_repeticao_segundos": 15,
+    "volume_alarme": 100,
 }
 
 CREDENCIAIS_PADRAO = {
@@ -188,6 +191,7 @@ _ABAS_CONFIG = None
 _SELENIUM_RODANDO = False
 _PEDIDO_CRED_PENDENTE = False
 _CRED_ARQUIVO_CRIADO = False
+_TICKET_ALARME = ""
 
 
 def normalizar_texto(texto):
@@ -196,10 +200,18 @@ def normalizar_texto(texto):
     A tela do Feegow varia entre 'DILATAÇÃO - CCC', 'DILATAÇÃO-CCC' e
     'RECEPÇÃO 1° ANDAR' (ou '1º'), então tudo vira a mesma forma canônica:
     'DILATACAO CCC', 'RECEPCAO 1 ANDAR'.
+
+    Os ordinais (º, ª) e o grau (°) são removidos ANTES do NFKD: o NFKD
+    transforma 'º' em 'o' e 'ª' em 'a', o que geraria '2O ANDAR' em vez de
+    '2 ANDAR' e a senha deixaria de casar.
     """
-    base = unicodedata.normalize("NFKD", str(texto or ""))
+    bruto = str(texto or "")
+    for simbolo in ("°", "º", "ª"):
+        bruto = bruto.replace(simbolo, " ")
+
+    base = unicodedata.normalize("NFKD", bruto)
     sem_acento = "".join(c for c in base if not unicodedata.combining(c))
-    for simbolo in ("°", "º", "ª", "-", "–", "—", ".", ",", "/", "\\", "(", ")", "[", "]", ":", ";", "|", "_"):
+    for simbolo in ("-", "–", "—", ".", ",", "/", "\\", "(", ")", "[", "]", ":", ";", "|", "_"):
         sem_acento = sem_acento.replace(simbolo, " ")
     return " ".join(sem_acento.upper().split())
 
@@ -222,6 +234,22 @@ def _para_bool(valor, padrao=True):
         if texto in ("0", "NAO", "N", "FALSE", "FALSO", "INATIVO", "INATIVA", "OFF", "DESLIGADO"):
             return False
     return padrao
+
+
+def _para_int(valor, padrao, minimo=None, maximo=None):
+    """Converte número de forma tolerante (aceita None, '12', '12,5')."""
+    if valor is None:
+        numero = padrao
+    else:
+        try:
+            numero = int(float(str(valor).replace(",", ".")))
+        except Exception:
+            numero = padrao
+    if minimo is not None and numero < minimo:
+        numero = minimo
+    if maximo is not None and numero > maximo:
+        numero = maximo
+    return numero
 
 
 def _lista_normalizada(valor):
@@ -294,6 +322,9 @@ def carregar_filtros(forcar=False):
             "intervalo_busca_segundos": max(1, int(combinado.get("intervalo_busca_segundos") or 10)),
             "alerta_tela": _para_bool(combinado.get("alerta_tela"), True),
             "alerta_voz": _para_bool(combinado.get("alerta_voz"), True),
+            "alarme_max_segundos": _para_int(combinado.get("alarme_max_segundos"), 120, 0),
+            "intervalo_repeticao_segundos": _para_int(combinado.get("intervalo_repeticao_segundos"), 15, 1),
+            "volume_alarme": _para_int(combinado.get("volume_alarme"), 100, 0, 100),
         }
         _FILTROS_MTIME = mtime
         log_msg(
@@ -587,8 +618,9 @@ def criar_janela_alarme():
     piscar_janela()
 
 def desarmar_alarme(manual=False):
-    global alarme_ativo, janela_alerta, pausa_ate, canvas_bg
+    global alarme_ativo, janela_alerta, pausa_ate, canvas_bg, _TICKET_ALARME
     alarme_ativo = False
+    _TICKET_ALARME = ""
     if janela_alerta:
         janela_alerta.destroy()
         janela_alerta = None
@@ -613,13 +645,18 @@ def preparar_audio_inicial():
     except Exception as e:
         log_msg(f"Erro ao pré-carregar áudio inicial: {str(e)}")
 
-def tocar_audio_em_dispositivo(nome_dispositivo, arquivo_audio):
+def tocar_audio_em_dispositivo(nome_dispositivo, arquivo_audio, volume=1.0):
     try:
         pygame.mixer.quit()
         pygame.mixer.init(devicename=nome_dispositivo)
         pygame.mixer.music.load(arquivo_audio)
+        pygame.mixer.music.set_volume(max(0.0, min(1.0, volume)))
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
+            if not alarme_ativo:
+                # desarmou no meio da fala: para na hora (antes ficava até acabar o mp3)
+                pygame.mixer.music.stop()
+                break
             time.sleep(0.1)
     except Exception:
         pass
@@ -645,7 +682,13 @@ def gerar_e_tocar_alerta_teste(mensagem, modo="todos", dispositivo_especifico=No
 
 def loop_audio_alarme():
     global alarme_ativo
-    
+
+    cfg = carregar_filtros()
+    intervalo = _para_int(cfg.get("intervalo_repeticao_segundos"), 15, 1)
+    limite_seg = _para_int(cfg.get("alarme_max_segundos"), 120, 0)
+    volume = _para_int(cfg.get("volume_alarme"), 100, 0, 100) / 100.0
+    inicio = time.time()
+
     # PLANO B: Se por algum motivo o arquivo não existir (erro no startup ou apagado), cria agora!
     if not os.path.exists(ARQUIVO_OFICIAL_ALERTA):
         log_msg("⚠️ Arquivo de áudio não encontrado. Gerando arquivo de emergência agora...")
@@ -657,17 +700,27 @@ def loop_audio_alarme():
         except Exception as e:
             log_msg(f"Falha ao gerar áudio de emergência. O alarme piscará sem som. Erro: {e}")
 
+    def estourou():
+        return bool(limite_seg) and (time.time() - inicio) > limite_seg
+
     try:
         while alarme_ativo:
+            if estourou():
+                log_msg(f"⏱️ Alarme tocou por {limite_seg}s e foi desarmado automaticamente.")
+                root.after(0, lambda: desarmar_alarme(manual=False))
+                break
+
             if os.path.exists(ARQUIVO_OFICIAL_ALERTA):
                 for disp in DISPOSITIVOS_AUDIO:
-                    if not alarme_ativo: break
-                    tocar_audio_em_dispositivo(disp, ARQUIVO_OFICIAL_ALERTA)
-            
-            for _ in range(15):
-                if not alarme_ativo: break
+                    if not alarme_ativo:
+                        break
+                    tocar_audio_em_dispositivo(disp, ARQUIVO_OFICIAL_ALERTA, volume)
+
+            for _ in range(intervalo):
+                if not alarme_ativo or estourou():
+                    break
                 time.sleep(1)
-                
+
         pygame.mixer.quit()
     except Exception as e:
         log_msg(f"Erro no loop de alarme: {e}")
@@ -1139,28 +1192,76 @@ def _localizar_botao_senha(cfg, timeout=8.0):
         return None
 
 
+def _texto_parece_senha(texto, cfg):
+    """True quando o texto do botão é mesmo uma senha das listas do filtro.
+
+    Sem esta checagem, qualquer botão da página que apenas CONTENHA um
+    `termos_gatilho` (ex.: um filtro escrito "RECEPÇÃO") era confundido com a
+    senha no modal: o script achava que a senha continuava na tela e o alarme
+    nunca desarmava.
+    """
+    alvo = normalizar_texto(texto)
+    if not alvo:
+        return False
+
+    modo_exato = cfg["comparacao"] in ("exata", "exato", "igual")
+    for senha in (cfg["whitelist"] + cfg["blacklist"]):
+        if not senha:
+            continue
+        if modo_exato:
+            if alvo == senha:
+                return True
+        elif alvo == senha or alvo.startswith(senha):
+            return True
+
+    # Senha fora das listas: só conta se o filtro manda alertar no que não casar.
+    if cfg.get("padrao_sem_match") == "alertar":
+        return any(normalizar_texto(t) in alvo for t in cfg["termos_gatilho"] if t)
+    return False
+
+
 def verificar_botao_explicacao():
-    global alarme_ativo
+    global alarme_ativo, _TICKET_ALARME
     cfg = carregar_filtros()
 
     botao_senha = _localizar_botao_senha(cfg, timeout=8.0)
+    texto_botao = ""
+    if botao_senha is not None:
+        try:
+            texto_botao = botao_senha.text.strip()
+        except Exception:
+            texto_botao = ""
+
+    # O XPath pode casar com um botão da página que só contém um termo de busca.
+    if texto_botao and not _texto_parece_senha(texto_botao, cfg):
+        texto_botao = ""
+        botao_senha = None
 
     if botao_senha is None:
         # Nenhuma senha no modal: se o alarme estava tocando, a senha saiu da fila
         if alarme_ativo:
+            log_msg("🔇 A senha saiu da tela — desarmando o alarme.")
             root.after(0, lambda: desarmar_alarme(manual=False))
         fechar_modal()
         return
 
     try:
-        texto_botao = botao_senha.text.strip()
         disparar, motivo = avaliar_chamada(texto_botao)
         log_msg(f"🔎 Senha '{texto_botao}' -> {motivo}")
+
         if disparar:
+            if (alarme_ativo and _TICKET_ALARME
+                    and normalizar_texto(texto_botao) != normalizar_texto(_TICKET_ALARME)):
+                log_msg(f"🔇 A senha na tela mudou ('{_TICKET_ALARME}' -> '{texto_botao}') — desarmando o alarme anterior.")
+                root.after(0, lambda: desarmar_alarme(manual=False))
             if datetime.datetime.now() > pausa_ate:
+                _TICKET_ALARME = texto_botao
                 disparar_estado_alarme()
             else:
                 log_msg(f"Ignorando chamada. Dentro do período de pausa até {pausa_ate.strftime('%H:%M:%S')}.")
+        elif alarme_ativo:
+            log_msg("🔇 A senha na tela agora é de IGNORAR — desarmando o alarme.")
+            root.after(0, lambda: desarmar_alarme(manual=False))
     except Exception as e:
         log_msg(f"⚠️ Falha ao avaliar a senha: {e}")
     finally:
@@ -1439,6 +1540,27 @@ def abrir_configuracoes(aba="senhas"):
     entrada_intervalo.insert(0, str(filtros.get("intervalo_busca_segundos") or 10))
     entrada_intervalo.grid(row=1, column=1, padx=8)
 
+    tk.Label(form2, text="Tempo máximo do alarme (s, 0 = sem limite):", bg="#1e1e1e", fg="#e5e7eb",
+             font=("Consolas", 10)).grid(row=2, column=0, sticky="w", pady=4)
+    entrada_max = tk.Entry(form2, width=8, bg="#111111", fg="#eeeeee",
+                           insertbackground="#eeeeee")
+    entrada_max.insert(0, str(_para_int(filtros.get("alarme_max_segundos"), 120, 0)))
+    entrada_max.grid(row=2, column=1, padx=8)
+
+    tk.Label(form2, text="Intervalo entre repetições da voz (s):", bg="#1e1e1e", fg="#e5e7eb",
+             font=("Consolas", 10)).grid(row=3, column=0, sticky="w", pady=4)
+    entrada_repeticao = tk.Entry(form2, width=8, bg="#111111", fg="#eeeeee",
+                                 insertbackground="#eeeeee")
+    entrada_repeticao.insert(0, str(_para_int(filtros.get("intervalo_repeticao_segundos"), 15, 1)))
+    entrada_repeticao.grid(row=3, column=1, padx=8)
+
+    tk.Label(form2, text="Volume da voz (%):", bg="#1e1e1e", fg="#e5e7eb",
+             font=("Consolas", 10)).grid(row=4, column=0, sticky="w", pady=4)
+    entrada_volume = tk.Entry(form2, width=8, bg="#111111", fg="#eeeeee",
+                              insertbackground="#eeeeee")
+    entrada_volume.insert(0, str(_para_int(filtros.get("volume_alarme"), 100, 0, 100)))
+    entrada_volume.grid(row=4, column=1, padx=8)
+
     # ---------------- rodapé ----------------
     rodape = tk.Frame(janela, bg="#1e1e1e")
     rodape.pack(fill=tk.X, padx=10, pady=(0, 10))
@@ -1463,6 +1585,9 @@ def abrir_configuracoes(aba="senhas"):
                     entrada_intervalo.get().replace(",", "."))))
             except Exception:
                 dados["intervalo_busca_segundos"] = 10
+            dados["alarme_max_segundos"] = _para_int(entrada_max.get(), 120, 0)
+            dados["intervalo_repeticao_segundos"] = _para_int(entrada_repeticao.get(), 15, 1)
+            dados["volume_alarme"] = _para_int(entrada_volume.get(), 100, 0, 100)
             _sincronizar_termos_filtro(dados)
             _gravar_json(ARQ_FILTROS, dados)
 

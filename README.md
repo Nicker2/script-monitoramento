@@ -159,6 +159,9 @@ Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo,
 | `intervalo_busca_segundos` | Espera entre uma verificação e outra na lista de espera (padrão 10). |
 | `alerta_tela` | `true`/`false` — liga ou desliga a **janela vermelha piscando** na tela (padrão `true`). |
 | `alerta_voz` | `true`/`false` — liga ou desliga a **fala sintetizada** (padrão `true`). |
+| `alarme_max_segundos` | Tempo máximo que o alarme toca antes de se desarmar sozinho (padrão `120`; `0` = sem limite). |
+| `intervalo_repeticao_segundos` | Espera entre uma repetição da voz e outra (padrão `15`). |
+| `volume_alarme` | Volume da voz, de `0` a `100` (padrão `100`). |
 
 **Configuração atual da clínica:**
 
@@ -383,6 +386,7 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 | O programa não acha o Chrome | Feche as janelas do Chrome abertas pelo Selenium e reinicie (o rastreamento é por PID). |
 | Pastas `scoped_dir...` enchendo o TEMP | São perfis temporários do ChromeDriver (60–90 MB cada). O script agora usa um **perfil fixo** em `%LOCALAPPDATA%\MonitorFeegow\chrome_profile` e limpa os órfãos no arranque. Se quiser apagar na mão, feche o monitoramento antes. |
 | Pastas `chromecrx_chrome_url_fetcher_...` / `chrome_chrome_BITS_...` | Não são do script: vêm do **instalador/atualizador do próprio Chrome** (BITS + url_fetcher). Somam poucos KB e o Windows limpa sozinho. |
+| Alarme não para depois que a senha sai | Corrigido: o script agora só considera "senha" um botão cujo texto case com as listas de `filtros.json` (antes qualquer botão da página que contivesse um termo de busca — ex. um filtro "RECEPÇÃO" — era confundido com a senha e o alarme nunca desarmava). Se ainda acontecer, veja no log se aparece `🔇 A senha saiu da tela`. |
 | `Could not reach host` / `Connection reset` ao iniciar | O `webdriver_manager` não conseguiu baixar o chromedriver (rede/firewall/proxy). Baixe manualmente em <https://googlechromelabs.github.io/chrome-for-testing/> e salve como `chromedriver.exe` na pasta do script — aí ele não precisa de internet para isso. |
 | `Unable to obtain driver for chrome` | Mesma causa acima: chromedriver ausente. A mensagem nova do script já mostra a pasta onde salvar o arquivo. |
 
@@ -428,6 +432,15 @@ Regras de segurança:
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Alarme desarmando de verdade + novos ajustes
+
+- **Bug corrigido:** o alarme continuava tocando depois que a senha saía da tela. Causa: `_localizar_botao_senha()` procurava qualquer `<button>` que **contivesse** um `termos_gatilho`; um botão da própria página (ex. filtro "RECEPÇÃO") casava, o script entendia que a senha continuava lá e nunca desarmava. A versão antiga não tinha o problema porque só procurava o texto `MC`.
+- Agora existe `_texto_parece_senha()`: o texto do botão tem de **ser** uma senha das listas (igual ou começando por ela). Botão de página com termo no meio é descartado.
+- Desarme extra: se o ticket na tela **mudar** em relação ao que armou o alarme, ou virar uma senha de IGNORAR, o alarme é desarmado na hora.
+- `tocar_audio_em_dispositivo()` para o mp3 imediatamente quando desarma (antes terminava a frase inteira).
+- Novas configs: `alarme_max_segundos` (padrão 120, `0` sem limite), `intervalo_repeticao_segundos` (15) e `volume_alarme` (100) — também na aba **Alertas** da janela de configuração.
+- Correção no normalizador: `º`/`ª` viram `o`/`a` no NFKD, então `RECEPÇÃO 2º ANDAR` virava `RECEPCAO 2O ANDAR` e não casava com `RECEPÇÃO 2° ANDAR`.
 
 ### Perfil do Chrome fixo (fim das pastas no TEMP)
 
