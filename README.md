@@ -13,6 +13,7 @@ As regras de filtro e as credenciais ficam em arquivos **JSON separados** (`filt
 - [Pré-requisitos](#pré-requisitos)
 - [Instalação](#instalação)
 - [Uso](#uso)
+- [Compilando um .exe (Nuitka)](#compilando-um-exe-nuitka)
 - [Solução de Problemas](#solução-de-problemas)
 - [Limpeza de Disco](#limpeza-de-disco-pcs-antigos)
 - [Histórico de Alterações](#histórico-de-alterações)
@@ -383,6 +384,71 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 
 ---
 
+## Compilando um `.exe` (Nuitka)
+
+O executável é gerado com [Nuitka](https://nuitka.net/), que compila o Python para código C nativo. Vantagem para PC de clínica: **não precisa instalar Python nem os pacotes** na máquina de destino — o `.exe` já leva tudo embutido.
+
+### Jeito rápido (1 clique)
+
+Dê **duplo clique em `compilar.bat`**. Ele confere o Nuitka, compila e abre a pasta `dist` no final.
+
+### Jeito manual
+
+```bat
+python -m pip install --upgrade nuitka
+python -m nuitka --onefile --assume-yes-for-downloads --mingw64 ^
+  --enable-plugin=tk-inter --windows-disable-console ^
+  --include-package=selenium ^
+  --include-package=pygame --include-package=pystray ^
+  --include-package=gtts --include-package-data=gtts ^
+  --nofollow-import-to=pygame.tests ^
+  --company-name="Monitor Feegow" --product-name="Monitor de Senha Feegow" ^
+  --file-version=1.0.0.0 --product-version=1.0.0.0 ^
+  --output-filename="MonitorFeegow.exe" --output-dir=dist ^
+  SCRIPT_EXPLICA.py
+```
+
+Saída: **`dist\MonitorFeegow.exe`** (arquivo único, ~49 MB).
+
+### O que cada opção faz
+
+| Opção | Motivo |
+| :--- | :--- |
+| `--onefile` | Um único `.exe`, fácil de copiar para os outros PCs. |
+| `--mingw64` + `--assume-yes-for-downloads` | Baixa o compilador C (MinGW) na primeira compilação — só precisa do Python, não do Visual Studio. |
+| `--enable-plugin=tk-inter` | Inclui o Tcl/Tk que o Tkinter usa (sem isso a janela não abre no PC de destino). |
+| `--windows-disable-console` | Igual ao `pythonw`: sem janela preta de console. |
+| `--include-package=pygame/pystray/gtts` | Garante as DLLs e pacotes que o Nuitka não deduz sozinho. |
+| `--include-package=selenium` | **Obrigatório**: o Selenium importa `selenium.webdriver.chrome.options` dinamicamente e o Nuitka não enxerga — sem isso o `.exe` abre, mas o WebDriver não inicia (`ModuleNotFoundError`). |
+| `--include-package-data=gtts` | Leva os arquivos internos do `gTTS`. |
+| `--nofollow-import-to=pygame.tests` | Pula o pacote de testes do pygame — sozinho ele mais que dobra o tempo de compilação. |
+| `--company-name`, `--file-version` … | Aparecem em Propriedades do arquivo no Windows. |
+
+### Onde ficam os JSONs no modo compilado
+
+O `SCRIPT_EXPLICA.py` detecta que está compilado (`__compiled__`) e grava/ler **`filtros.json` e `credenciais.json` na mesma pasta do `.exe`** — não na pasta temporária de extração do `--onefile` (que é apagada ao fechar). Então:
+
+```
+📁 Pasta do monitor
+   ├── MonitorFeegow.exe      ← o compilado
+   ├── filtros.json           ← criado no primeiro uso
+   └── credenciais.json       ← criado no primeiro uso
+```
+
+Na primeira execução ele cria os dois sozinhos e abre a caixa pedindo login/senha.
+
+### Detalhes e problemas comuns
+
+- **A primeira compilação demora** (5 a 20 min): baixa o MinGW e compila tudo. As seguintes levam ~1 min.
+- **`print()` sem console**: com `--windows-disable-console` o `sys.stdout` chega como `None`, e o primeiro `print()` derrubava a thread de inicialização em silêncio (o `.exe` abria, criava os JSONs e não fazia mais nada). O script substitui `stdout`/`stderr` por um fluxo nulo no topo do arquivo — o mesmo vale para rodar com `pythonw`. Se você compilar com console habilitado, isso é inofensivo.
+- **Primeira abertura do `.exe` é mais lenta** (2–5s): o `--onefile` extrai para o TEMP antes de rodar.
+- **Antivírus/SmartScreen** pode avisar que o `.exe` é desconhecido (não é assinado). Isso é normal em binário compilado por você mesmo — libere a pasta.
+- **`--standalone` em vez de `--onefile`**: gera uma pasta `dist\SCRIPT_EXPLICA.dist\` com vários arquivos. Abre mais rápido, mas precisa copiar a pasta inteira.
+- **ChromeDriver**: continua igual — o `.exe` lê a versão do Chrome instalado e baixa o driver certo em `%LOCALAPPDATA%\MonitorFeegow\drivers`.
+- **Não versione o `dist\`** (está no `.gitignore`): binário de dezenas de MB não pertence ao repositório.
+
+---
+
 ## Solução de Problemas
 
 | Sintoma | Causa provável / solução |
@@ -447,6 +513,13 @@ Regras de segurança:
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Versão compilada (.exe com Nuitka)
+
+- `compilar.bat` gera `dist\MonitorFeegow.exe` com um duplo clique — sem precisar de Visual Studio (o MinGW é baixado automaticamente com `--mingw64`).
+- `_pasta_do_programa()` detecta o modo compilado (`__compiled__` / `NUITKA_ONEFILE_BINARY`) e usa a pasta do **executável**, não a pasta temporária de extração do `--onefile` — antes os JSONs seriam criados no TEMP e apagados ao fechar.
+- `garantir_dependencias()` sai na hora quando compilado (as dependências já estão embutidas).
+- Passo a passo completo, tabela de cada flag e problemas comuns no README, seção **“Compilando um `.exe` (Nuitka)”**.
 
 ### Padrões prontos de filtro (botões)
 

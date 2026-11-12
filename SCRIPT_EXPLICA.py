@@ -14,6 +14,34 @@ from tkinter import scrolledtext
 import tempfile # NOVA BIBLIOTECA PARA USAR A PASTA TEMP DO WINDOWS
 import subprocess
 
+
+# ==============================================================================
+# 🖥️ SEM CONSOLE (pythonw / .exe compilado): sys.stdout vem None e TODO print() estoura
+#    AttributeError -> a thread de inicialização morria em silêncio.
+# ==============================================================================
+class _FluxoSemConsole:
+    encoding = "utf-8"
+    errors = "replace"
+
+    def write(self, *_args):
+        return 0
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        raise OSError("sem console nesta execução")
+
+
+if sys.stdout is None:
+    sys.stdout = _FluxoSemConsole()
+if sys.stderr is None:
+    sys.stderr = _FluxoSemConsole()
+
+
 # ==============================================================================
 # 📦 AUTO-INSTALAÇÃO DAS DEPENDÊNCIAS (roda ANTES dos imports de terceiros)
 # ==============================================================================
@@ -40,8 +68,12 @@ def garantir_dependencias() -> bool:
     """Confere os pacotes de terceiros e instala com pip o que estiver faltando.
 
     Roda antes de qualquer import pesado, então o programa não morre com
-    ModuleNotFoundError em um PC novo.
+    ModuleNotFoundError em um PC novo. No .exe compilado as dependências já
+    vêm embutidas, então não há nada para instalar.
     """
+    if "__compiled__" in globals():
+        return True
+
     faltando = [pacote for modulo, pacote, _obr in MODULOS_NECESSARIOS
                 if not _modulo_disponivel(modulo)]
     if not faltando:
@@ -128,7 +160,25 @@ ARQUIVO_OFICIAL_ALERTA = os.path.join(PASTA_TEMP, f"alerta_oficial_{int(time.tim
 #   filtros.json      -> blacklist / whitelist / termo gatilho / tempos
 #   credenciais.json  -> usuário e senha do Feegow (nunca versionar)
 # ==============================================================================
-PASTA_SCRIPT = os.path.dirname(os.path.abspath(__file__))
+def _pasta_do_programa():
+    """Pasta dos JSONs — vale rodando o .py e também o .exe compilado.
+
+    No .exe (Nuitka --onefile) o `__file__` aponta para a pasta temporária de
+    extração, que é apagada ao fechar; aí a referência certa é o executável.
+    """
+    if "__compiled__" in globals() or getattr(sys, "frozen", False):
+        candidatos = [
+            os.environ.get("NUITKA_ONEFILE_BINARY", ""),
+            sys.argv[0] if sys.argv else "",
+            sys.executable,
+        ]
+        for caminho in candidatos:
+            if caminho and os.path.isfile(caminho):
+                return os.path.dirname(os.path.abspath(caminho))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+PASTA_SCRIPT = _pasta_do_programa()
 
 ARQ_FILTROS = os.path.join(PASTA_SCRIPT, "filtros.json")
 ARQ_CREDENCIAIS = os.path.join(PASTA_SCRIPT, "credenciais.json")

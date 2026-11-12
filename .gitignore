@@ -10,3 +10,11 @@ credenciais.json
 # Binário do chromedriver: cada máquina coloca o seu (ver README > Instalação).
 chromedriver.exe
 drivers/
+
+# Saída da compilação com Nuitka (ver README > Compilando um .exe)
+dist/
+*.build/
+*.dist/
+*.onefile-build/
+build_nuitka.log
+*.exe
