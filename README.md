@@ -1,6 +1,6 @@
 # Monitoramento de Senha no Feegow
 
-Script em Python que usa Selenium para monitorar e clicar automaticamente no botão "Chamar senha" do sistema Feegow. Quando aparece uma senha de **marcação cirúrgica (`MC`)** — e ela não é um falso positivo — o script dispara um alarme sonoro com voz sintetizada e uma janela piscante na tela.
+Script em Python que usa Selenium para monitorar e clicar automaticamente no botão "Chamar senha" do sistema Feegow. Quando aparece uma senha de **dilatação** (ou `AUTO REFRATOR (SEM DILATAR)`) — e ela não está na lista de ignoradas — o script dispara um alarme sonoro com voz sintetizada e/ou uma janela piscante na tela.
 
 As regras de filtro e as credenciais ficam em arquivos **JSON separados** (`filtros.json` e `credenciais.json`), então dá para mudar o comportamento sem tocar no código.
 
@@ -47,9 +47,9 @@ O Chrome roda **fora da tela** (posição `-10000,-10000`) com a janela rastread
 3. Lê o texto do botão que aparece no modal
              |
 4. Decide o que fazer:
-      whitelist casou?  -> DISPARA o alarme
-      blacklist casou?  -> IGNORA (falso positivo)
-      nada casou?       -> DISPARA o alarme
+      whitelist casou?  -> ALERTA
+      blacklist casou?  -> IGNORA
+      nada casou?       -> segue padrao_sem_match (padrão: ignora)
              |
 5. Espera intervalo_busca_segundos e volta para o passo 2
 ```
@@ -129,10 +129,11 @@ Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo,
 
 ```json
 {
-  "termo_gatilho": "MC",
+  "termos_gatilho": ["DILATAÇÃO", "MC", "AUTO REFRATOR", "CONSULTA", "..."],
   "comparacao": "contem",
-  "blacklist": ["CONSULTA", "EXAME", "PRIORITÁRIA", "..."],
-  "whitelist": ["MC URGENTE"],
+  "padrao_sem_match": "ignorar",
+  "whitelist": ["DILATAÇÃO - CCC", "DILATAÇÃO - MMM", "..."],
+  "blacklist": ["CONSULTA - COMUM", "EXAME - COMUM", "MC", "..."],
   "pausa_minutos": 15,
   "intervalo_busca_segundos": 10,
   "alerta_tela": false,
@@ -142,16 +143,35 @@ Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo,
 
 | Campo | O que faz |
 | :--- | :--- |
-| `termo_gatilho` | Sigla que o botão precisa conter para ser analisado (padrão `MC`). |
-| `comparacao` | `contem` (padrão) ou `exata` — como a blacklist/whitelist casa com o texto. |
-| `blacklist` | Se casar, a chamada é **ignorada** (falso positivo, ex.: `CONSULTA`). |
-| `whitelist` | Se casar, **dispara o alarme mesmo que também case com a blacklist** (tem prioridade). |
+| `termos_gatilho` | Textos usados só para **localizar o botão da senha** no modal (qualquer um deles serve). |
+| `comparacao` | `contem` (padrão) ou `exata` — como as listas casam com o texto da senha. |
+| `whitelist` | Senhas que **DEVEM alertar**. Tem prioridade: vence a blacklist. |
+| `blacklist` | Senhas que devem ser **IGNORADAS**. |
+| `padrao_sem_match` | `ignorar` (padrão) ou `alertar` — o que fazer quando a senha não está em nenhuma das listas. |
 | `pausa_minutos` | Quanto tempo o botão "CIENTE" silencia os alertas (padrão 15). |
 | `intervalo_busca_segundos` | Espera entre uma verificação e outra na lista de espera (padrão 10). |
 | `alerta_tela` | `true`/`false` — liga ou desliga a **janela vermelha piscando** na tela (padrão `true`). |
 | `alerta_voz` | `true`/`false` — liga ou desliga a **fala sintetizada** (padrão `true`). |
 
-> A comparação ignora **acentos e maiúsculas/minúsculas** (`PRIORITARIA` casa com `PRIORITÁRIA`). Chaves começando com `_` (ex.: `_comentario`) são ignoradas.
+**Configuração atual da clínica:**
+
+| ALERTAR (whitelist) | IGNORAR (blacklist) |
+| :--- | :--- |
+| DILATAÇÃO - CCC | CONSULTA - COMUM |
+| DILATAÇÃO - MMM | EXAME - COMUM |
+| DILATAÇÃO - FENIL | PRIORITÁRIA |
+| DILATAÇÃO - CMC | AGENDAMENTOS |
+| DILATAÇÃO - CMM | CIRURGIA |
+| DILATAÇÃO COM PILOCARPINA | RETORNO |
+| AUTO REFRATOR (SEM DILATAR) | LENTES DE CONTATO |
+| | R2 |
+| | MC |
+| | RECEPÇÃO 1° ANDAR |
+| | RECEPÇÃO 2° ANDAR |
+| | RECEPÇÃO SUS |
+| | OUTRAS ESPECIALIDADES |
+
+> A comparação ignora **acentos, maiúsculas/minúsculas, hífens e pontuação**: `DILATAÇÃO-CCC`, `dilatacao ccc` e `DILATAÇÃO - CCC` caem todas na mesma regra. `RECEPÇÃO 1º ANDAR` também casa com `RECEPÇÃO 1° ANDAR`. Chaves começando com `_` (ex.: `_comentario`) são ignoradas.
 
 **Modos de alerta (as duas chaves do fim):**
 
@@ -164,7 +184,7 @@ Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo,
 
 `true`/`false`, `1`/`0`, `"sim"`/`"não"` e `"on"`/`"off"` são todos aceitos.
 
-**Ordem de decisão do filtro:** `whitelist` > `blacklist` > dispara. A whitelist existe para o caso "tem palavra da blacklist, mas é urgente mesmo".
+**Ordem de decisão do filtro:** `whitelist` (alerta) > `blacklist` (ignora) > `padrao_sem_match`. A whitelist existe justamente para o caso em que a senha contém uma palavra da blacklist mas deve alertar de qualquer forma — é o caso de `DILATAÇÃO - CMC`, que contém `MC`.
 
 ### **credenciais.json**
 Usuário e senha do Feegow. **Não é versionado** (está no `.gitignore`) — o script cria na primeira execução a partir de `credenciais.exemplo.json` e avisa no log até você preencher.
@@ -332,6 +352,13 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Filtros por lista (alertar × ignorar)
+
+- **`whitelist` = ALERTAR** e **`blacklist` = IGNORAR**, com a whitelist vencendo sempre. Antes a lógica era "MC obrigatório + blacklist de falsos positivos", o que ignorava justamente as senhas de dilatação.
+- **`padrao_sem_match`**: decide o que fazer com senha fora das duas listas (padrão `ignorar`, para nunca alarmar em cima de senha desconhecida).
+- **`termos_gatilho`** (lista) substitui o termo único: o botão da senha é localizado por qualquer um dos termos, então o script passou a achar `DILATAÇÃO - CCC`, `AUTO REFRATOR (SEM DILATAR)` e `MC`.
+- Normalização passou a remover **hífens, barras, parênteses e símbolos de ordinal** (`°`/`º`), então `DILATAÇÃO-CCC`, `dilatacao ccc` e `RECEPÇÃO 1º ANDAR` casam com as listas.
 
 ### Alertas ligáveis/desligáveis + login SSO
 

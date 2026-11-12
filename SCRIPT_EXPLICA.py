@@ -55,14 +55,38 @@ ARQ_CREDENCIAIS = os.path.join(PASTA_SCRIPT, "credenciais.json")
 ARQ_CREDENCIAIS_EXEMPLO = os.path.join(PASTA_SCRIPT, "credenciais.exemplo.json")
 
 FILTROS_PADRAO = {
-    "termo_gatilho": "MC",
-    "comparacao": "contem",
-    "blacklist": [
-        "CONSULTA", "EXAME", "PRIORITÁRIA", "AGENDAMENTOS", "RETORNO", "R2",
-        "DILATAÇÃO", "CMC", "CMM", "FENIL", "RECEPÇÃO", "SUS", "ESPECIALIDADES",
-        "CIRURGIA", "LENTES", "AUTO REFRATOR"
+    "termos_gatilho": [
+        "DILATAÇÃO", "DILATACAO", "AUTO REFRATOR",
+        "MC", "CONSULTA", "EXAME", "PRIORITÁRIA", "AGENDAMENTOS",
+        "CIRURGIA", "RETORNO", "LENTES", "R2",
+        "RECEPÇÃO", "OUTRAS ESPECIALIDADES",
     ],
-    "whitelist": [],
+    "comparacao": "contem",
+    "padrao_sem_match": "ignorar",
+    "whitelist": [
+        "DILATAÇÃO - CCC",
+        "DILATAÇÃO - MMM",
+        "DILATAÇÃO - FENIL",
+        "DILATAÇÃO - CMC",
+        "DILATAÇÃO - CMM",
+        "DILATAÇÃO COM PILOCARPINA",
+        "AUTO REFRATOR (SEM DILATAR)",
+    ],
+    "blacklist": [
+        "CONSULTA - COMUM",
+        "EXAME - COMUM",
+        "PRIORITÁRIA",
+        "AGENDAMENTOS",
+        "CIRURGIA",
+        "RETORNO",
+        "LENTES DE CONTATO",
+        "R2",
+        "MC",
+        "RECEPÇÃO 1° ANDAR",
+        "RECEPÇÃO SUS",
+        "OUTRAS ESPECIALIDADES",
+        "RECEPÇÃO 2° ANDAR",
+    ],
     "pausa_minutos": 15,
     "intervalo_busca_segundos": 10,
     "alerta_tela": True,
@@ -83,9 +107,16 @@ _FILTROS_MTIME = 0.0
 
 
 def normalizar_texto(texto):
-    """Maiúsculas, sem acento e com espaços simples — base das comparações."""
+    """Maiúsculas, sem acento, sem hífen/barra/pontuação e com espaços simples.
+
+    A tela do Feegow varia entre 'DILATAÇÃO - CCC', 'DILATAÇÃO-CCC' e
+    'RECEPÇÃO 1° ANDAR' (ou '1º'), então tudo vira a mesma forma canônica:
+    'DILATACAO CCC', 'RECEPCAO 1 ANDAR'.
+    """
     base = unicodedata.normalize("NFKD", str(texto or ""))
     sem_acento = "".join(c for c in base if not unicodedata.combining(c))
+    for simbolo in ("°", "º", "ª", "-", "–", "—", ".", ",", "/", "\\", "(", ")", "[", "]", ":", ";", "|", "_"):
+        sem_acento = sem_acento.replace(simbolo, " ")
     return " ".join(sem_acento.upper().split())
 
 
@@ -128,8 +159,10 @@ def _criar_filtros_padrao():
     dados = dict(FILTROS_PADRAO)
     dados["_comentario"] = (
         "Edite este arquivo e salve: o script recarrega sozinho, sem reiniciar. "
-        "blacklist = IGNORA a chamada; whitelist = DISPARA o alarme mesmo que também "
-        "case com a blacklist; termo_gatilho = sigla do botão (ex.: MC)."
+        "whitelist = senhas que DEVEM alertar (vence a blacklist); "
+        "blacklist = senhas que devem ser IGNORADAS; "
+        "termos_gatilho = textos usados para localizar o botão da senha no modal; "
+        "padrao_sem_match = o que fazer quando o texto não está em nenhuma das listas."
     )
     _gravar_json(ARQ_FILTROS, dados)
     log_msg(f"📄 filtros.json criado com os valores padrão em {ARQ_FILTROS}")
@@ -162,8 +195,11 @@ def carregar_filtros(forcar=False):
         combinado = dict(FILTROS_PADRAO)
         combinado.update({k: v for k, v in dados.items() if not str(k).startswith("_") and v is not None})
         _FILTROS = {
-            "termo_gatilho": normalizar_texto(combinado.get("termo_gatilho")),
+            "termos_gatilho": _lista_normalizada(
+                combinado.get("termos_gatilho") or combinado.get("termo_gatilho")
+            ),
             "comparacao": str(combinado.get("comparacao") or "contem").strip().lower(),
+            "padrao_sem_match": str(combinado.get("padrao_sem_match") or "ignorar").strip().lower(),
             "blacklist": _lista_normalizada(combinado.get("blacklist")),
             "whitelist": _lista_normalizada(combinado.get("whitelist")),
             "pausa_minutos": max(1, int(combinado.get("pausa_minutos") or 15)),
@@ -173,9 +209,10 @@ def carregar_filtros(forcar=False):
         }
         _FILTROS_MTIME = mtime
         log_msg(
-            "⚙️ filtros.json carregado: gatilho '"
-            f"{_FILTROS['termo_gatilho']}', {len(_FILTROS['blacklist'])} na blacklist, "
-            f"{len(_FILTROS['whitelist'])} na whitelist | alerta_tela="
+            f"⚙️ filtros.json carregado: {len(_FILTROS['whitelist'])} para ALERTAR, "
+            f"{len(_FILTROS['blacklist'])} para IGNORAR, "
+            f"{len(_FILTROS['termos_gatilho'])} termos de busca | sem correspondência: "
+            f"{_FILTROS['padrao_sem_match']} | alerta_tela="
             f"{'ON' if _FILTROS['alerta_tela'] else 'OFF'}, alerta_voz="
             f"{'ON' if _FILTROS['alerta_voz'] else 'OFF'}."
         )
@@ -186,33 +223,31 @@ def carregar_filtros(forcar=False):
 
 
 def avaliar_chamada(texto_botao):
-    """Decide se o texto do botão dispara o alarme.
+    """Decide se o texto da senha dispara o alarme.
 
     Prioridade:
-      1. Whitelist -> dispara sempre que casar (vence a blacklist).
-      2. Blacklist -> ignora a chamada (falso positivo).
-      3. Nada casou -> dispara (é marcação cirúrgica de verdade).
+      1. Whitelist -> ALERTA (vence a blacklist, mesmo com termo em comum).
+      2. Blacklist -> IGNORA a chamada.
+      3. Nada casou -> segue 'padrao_sem_match' (padrão: ignorar).
     """
     cfg = carregar_filtros()
     texto = normalizar_texto(texto_botao)
-    termo = cfg["termo_gatilho"]
     modo_exato = cfg["comparacao"] in ("exata", "exato", "igual")
-
-    if termo and termo not in texto:
-        return False, f"não contém o termo gatilho '{termo}'"
 
     def casou(item):
         return texto == item if modo_exato else item in texto
 
     for item in cfg["whitelist"]:
         if casou(item):
-            return True, f"whitelist ('{item}')"
+            return True, f"ALERTAR (whitelist: '{item}')"
 
     for item in cfg["blacklist"]:
         if casou(item):
-            return False, f"blacklist ('{item}')"
+            return False, f"IGNORAR (blacklist: '{item}')"
 
-    return True, "marcação cirúrgica confirmada"
+    if cfg.get("padrao_sem_match") == "alertar":
+        return True, "sem correspondência -> ALERTAR (padrao_sem_match)"
+    return False, "sem correspondência -> IGNORAR (padrao_sem_match)"
 
 
 def carregar_credenciais():
@@ -772,29 +807,59 @@ def fechar_modal():
     except:
         pass
 
+def _localizar_botao_senha(cfg, timeout=8.0):
+    """Acha o botão da senha no modal pelo texto (usa os 'termos_gatilho').
+
+    Retorna None quando não há senha no modal — é assim que se detecta que a
+    senha saiu da fila e o alarme pode ser desarmado.
+    """
+    termos = cfg.get("termos_gatilho") or []
+    fim = time.time() + timeout
+    while time.time() < fim:
+        try:
+            botoes = driver.find_elements(By.CSS_SELECTOR, "button")
+        except Exception:
+            botoes = []
+        for botao in botoes:
+            try:
+                if not botao.is_displayed():
+                    continue
+                texto = normalizar_texto(botao.text)
+                if len(texto) < 2:
+                    continue
+                if not termos or any(termo in texto for termo in termos):
+                    return botao
+            except Exception:
+                continue
+        time.sleep(0.3)
+    return None
+
+
 def verificar_botao_explicacao():
     global alarme_ativo
     cfg = carregar_filtros()
-    termo_botao = (cfg["termo_gatilho"] or "MC").replace('"', "")
-    try:
-        botao_mc = WebDriverWait(driver, 5).until(
-            EC.visibility_of_element_located((By.XPATH, f"//button[contains(normalize-space(text()), '{termo_botao}')]"))
-        )
-        if botao_mc:
-            texto_botao = botao_mc.text.strip()
-            disparar, motivo = avaliar_chamada(texto_botao)
-            log_msg(f"🔎 Botão '{texto_botao}' -> {motivo}")
-            if disparar:
-                if datetime.datetime.now() > pausa_ate:
-                    disparar_estado_alarme()
-                else:
-                    log_msg(f"Ignorando chamada. Dentro do período de pausa até {pausa_ate.strftime('%H:%M:%S')}.")
-            fechar_modal()
-    except TimeoutException:
+
+    botao_senha = _localizar_botao_senha(cfg, timeout=8.0)
+
+    if botao_senha is None:
+        # Nenhuma senha no modal: se o alarme estava tocando, a senha saiu da fila
         if alarme_ativo:
             root.after(0, lambda: desarmar_alarme(manual=False))
         fechar_modal()
-    except Exception:
+        return
+
+    try:
+        texto_botao = botao_senha.text.strip()
+        disparar, motivo = avaliar_chamada(texto_botao)
+        log_msg(f"🔎 Senha '{texto_botao}' -> {motivo}")
+        if disparar:
+            if datetime.datetime.now() > pausa_ate:
+                disparar_estado_alarme()
+            else:
+                log_msg(f"Ignorando chamada. Dentro do período de pausa até {pausa_ate.strftime('%H:%M:%S')}.")
+    except Exception as e:
+        log_msg(f"⚠️ Falha ao avaliar a senha: {e}")
+    finally:
         fechar_modal()
 
 
