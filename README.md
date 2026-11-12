@@ -374,6 +374,8 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 | O login não passa | Confira `usuario`/`senha` no `credenciais.json`. O log avisa se ainda está com os dados de exemplo. |
 | "Usuário já conectado em outra máquina" | É esperado: o script cai no bypass invisível automaticamente e assume a sessão. |
 | O programa não acha o Chrome | Feche as janelas do Chrome abertas pelo Selenium e reinicie (o rastreamento é por PID). |
+| Pastas `scoped_dir...` enchendo o TEMP | São perfis temporários do ChromeDriver (60–90 MB cada). O script agora usa um **perfil fixo** em `%LOCALAPPDATA%\MonitorFeegow\chrome_profile` e limpa os órfãos no arranque. Se quiser apagar na mão, feche o monitoramento antes. |
+| Pastas `chromecrx_chrome_url_fetcher_...` / `chrome_chrome_BITS_...` | Não são do script: vêm do **instalador/atualizador do próprio Chrome** (BITS + url_fetcher). Somam poucos KB e o Windows limpa sozinho. |
 | `Could not reach host` / `Connection reset` ao iniciar | O `webdriver_manager` não conseguiu baixar o chromedriver (rede/firewall/proxy). Baixe manualmente em <https://googlechromelabs.github.io/chrome-for-testing/> e salve como `chromedriver.exe` na pasta do script — aí ele não precisa de internet para isso. |
 | `Unable to obtain driver for chrome` | Mesma causa acima: chromedriver ausente. A mensagem nova do script já mostra a pasta onde salvar o arquivo. |
 
@@ -389,6 +391,13 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Perfil do Chrome fixo (fim das pastas no TEMP)
+
+- Sem `--user-data-dir`, o ChromeDriver cria uma pasta `scoped_dir<pid>_*` no TEMP por sessão (60–90 MB com o cache do Feegow) e **só apaga se a sessão terminar normalmente**. Execução morta na força (taskkill, crash, desligar o PC) deixa o lixo para trás.
+- Agora o script passa `--user-data-dir=%LOCALAPPDATA%\MonitorFeegow\chrome_profile`: pasta única e reaproveitada, com o bônus de manter os cookies da sessão.
+- `_limpar_scoped_dirs_orfas()` roda no arranque e apaga `scoped_dir<pid>_*` do TEMP cujo PID dono já morreu (nunca toca em pasta de sessão viva).
+- `--incognito` **não** resolve: testado, continua criando as pastas — e ainda forçaria login novo a cada início.
 
 ### Primeira execução / senha recusada (msgbox)
 

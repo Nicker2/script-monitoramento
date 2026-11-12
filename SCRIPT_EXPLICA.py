@@ -731,6 +731,59 @@ def _achar_chromedriver():
     return None
 
 
+def _pasta_perfil_chrome():
+    """Perfil fixo do Chrome do monitoramento.
+
+    Sem `--user-data-dir`, o chromedriver cria uma pasta nova `scoped_dir<pid>_*`
+    no TEMP a cada execução (60-90 MB cada) e nunca apaga.
+    """
+    base = os.path.join(os.environ.get("LOCALAPPDATA", PASTA_SCRIPT), "MonitorFeegow", "chrome_profile")
+    try:
+        os.makedirs(base, exist_ok=True)
+        return base
+    except Exception:
+        return None
+
+
+def _limpar_scoped_dirs_orfas(idade_min_horas=1.0):
+    """Remove perfis temporários de Chrome deixados por execuções anteriores.
+
+    Só apaga `scoped_dir<pid>_*` do TEMP quando o PID dono já morreu e a pasta
+    tem mais de `idade_min_horas` (nunca mexe em uso por outro ChromeDriver).
+    """
+    import tempfile
+    temporario = tempfile.gettempdir()
+    removidas = 0
+    agora = time.time()
+    try:
+        nomes = os.listdir(temporario)
+    except Exception:
+        return 0
+
+    for nome in nomes:
+        if not nome.startswith("scoped_dir"):
+            continue
+        caminho = os.path.join(temporario, nome)
+        if not os.path.isdir(caminho):
+            continue
+        try:
+            if (agora - os.path.getmtime(caminho)) < idade_min_horas * 3600:
+                continue
+            resto = nome[len("scoped_dir"):]
+            parte_pid = resto.split("_")[0]
+            pid = int(parte_pid) if parte_pid.isdigit() else 0
+            if pid and psutil.pid_exists(pid):
+                continue
+            shutil.rmtree(caminho, ignore_errors=True)
+            removidas += 1
+        except Exception:
+            continue
+
+    if removidas:
+        log_msg(f"🧹 Limpeza: {removidas} perfil(is) temporário(s) de Chrome antigos removidos do TEMP.")
+    return removidas
+
+
 def criar_driver_chrome(options):
     """Cria o webdriver.Chrome priorizando o chromedriver local.
 
@@ -764,6 +817,14 @@ def iniciar_selenium():
         options.add_argument("--no-sandbox")
         options.add_argument("--log-level=3")
         options.add_argument("--window-position=-10000,-10000") 
+
+        # Perfil fixo: evita o chromedriver criar uma pasta scoped_dir nova no
+        # TEMP a cada execução (e reaproveita os cookies da sessão).
+        perfil_chrome = _pasta_perfil_chrome()
+        if perfil_chrome:
+            options.add_argument(f"--user-data-dir={perfil_chrome}")
+
+        _limpar_scoped_dirs_orfas()
 
         try:
             driver = criar_driver_chrome(options)
