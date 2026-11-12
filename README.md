@@ -186,6 +186,19 @@ Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo,
 
 **Ordem de decisão do filtro:** `whitelist` (alerta) > `blacklist` (ignora) > `padrao_sem_match`. A whitelist existe justamente para o caso em que a senha contém uma palavra da blacklist mas deve alertar de qualquer forma — é o caso de `DILATAÇÃO - CMC`, que contém `MC`.
 
+### Exemplos prontos (pasta `exemplos/`)
+
+Quatro `filtros.json` prontos para copiar. Para usar: copie o arquivo desejado **sobre** o `filtros.json` da pasta do script (ou copie o conteúdo) e reinicie.
+
+| Arquivo | O que alerta |
+| :--- | :--- |
+| `exemplos/filtros.dilatacao.json` | As senhas de dilatação (`DILATAÇÃO - CCC/MMM/FENIL/CMC/CMM`, `DILATAÇÃO COM PILOCARPINA`, `AUTO REFRATOR (SEM DILATAR)`) e ignora o resto. É idêntico ao `filtros.json` do repositório. |
+| `exemplos/filtros.lentes-de-contato.json` | **Só** `LENTES DE CONTATO`. |
+| `exemplos/filtros.mc.json` | **Só** `MC`. Usa `comparacao: "exata"` de propósito, para `DILATAÇÃO - CMC` não disparar junto. |
+| `exemplos/filtros.r2.json` | **Só** `R2`. |
+
+> Nos três exemplos de senha única a `blacklist` está vazia e `padrao_sem_match` é `ignorar`: qualquer senha diferente daquela é silenciosa.
+
 ### **credenciais.json**
 Usuário e senha do Feegow. **Não é versionado** (está no `.gitignore`) — o script cria na primeira execução a partir de `credenciais.exemplo.json` e avisa no log até você preencher.
 

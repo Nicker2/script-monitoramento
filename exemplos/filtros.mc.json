@@ -1,0 +1,16 @@
+{
+  "_comentario": "EXEMPLO 3/4 - MC. Alerta APENAS quando a senha for MC. O 'comparacao': 'exata' e proposital: com 'contem' o texto 'DILATACAO - CMC' tambem casaria com 'MC'. Se na sua tela o botao vier como 'MC - ALGUMA COISA', troque para 'contem' e aceite que CMC tambem alerta.",
+  "termos_gatilho": [
+    "MC"
+  ],
+  "comparacao": "exata",
+  "padrao_sem_match": "ignorar",
+  "whitelist": [
+    "MC"
+  ],
+  "blacklist": [],
+  "pausa_minutos": 15,
+  "intervalo_busca_segundos": 10,
+  "alerta_tela": false,
+  "alerta_voz": true
+}

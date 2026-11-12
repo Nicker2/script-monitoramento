@@ -1,0 +1,49 @@
+{
+  "_comentario": "EXEMPLO 1/4 - DILATACAO. Alerta as senhas de dilatacao e ignora o resto. Para usar: copie este arquivo sobre filtros.json (ou copie o conteudo) e reinicie o script. whitelist = senhas que DEVEM alertar; blacklist = senhas IGNORADAS; termos_gatilho = textos usados para localizar o botao da senha no modal.",
+  "termos_gatilho": [
+    "DILATAÇÃO",
+    "DILATACAO",
+    "AUTO REFRATOR",
+    "MC",
+    "CONSULTA",
+    "EXAME",
+    "PRIORITÁRIA",
+    "AGENDAMENTOS",
+    "CIRURGIA",
+    "RETORNO",
+    "LENTES",
+    "R2",
+    "RECEPÇÃO",
+    "OUTRAS ESPECIALIDADES"
+  ],
+  "comparacao": "contem",
+  "padrao_sem_match": "ignorar",
+  "whitelist": [
+    "DILATAÇÃO - CCC",
+    "DILATAÇÃO - MMM",
+    "DILATAÇÃO - FENIL",
+    "DILATAÇÃO - CMC",
+    "DILATAÇÃO - CMM",
+    "DILATAÇÃO COM PILOCARPINA",
+    "AUTO REFRATOR (SEM DILATAR)"
+  ],
+  "blacklist": [
+    "CONSULTA - COMUM",
+    "EXAME - COMUM",
+    "PRIORITÁRIA",
+    "AGENDAMENTOS",
+    "CIRURGIA",
+    "RETORNO",
+    "LENTES DE CONTATO",
+    "R2",
+    "MC",
+    "RECEPÇÃO 1° ANDAR",
+    "RECEPÇÃO SUS",
+    "OUTRAS ESPECIALIDADES",
+    "RECEPÇÃO 2° ANDAR"
+  ],
+  "pausa_minutos": 15,
+  "intervalo_busca_segundos": 10,
+  "alerta_tela": false,
+  "alerta_voz": true
+}

@@ -1,0 +1,16 @@
+{
+  "_comentario": "EXEMPLO 4/4 - R2. Alerta APENAS quando a senha for R2; qualquer outra senha e ignorada. Para usar: copie este arquivo sobre filtros.json (ou copie o conteudo) e reinicie o script.",
+  "termos_gatilho": [
+    "R2"
+  ],
+  "comparacao": "contem",
+  "padrao_sem_match": "ignorar",
+  "whitelist": [
+    "R2"
+  ],
+  "blacklist": [],
+  "pausa_minutos": 15,
+  "intervalo_busca_segundos": 10,
+  "alerta_tela": false,
+  "alerta_voz": true
+}
