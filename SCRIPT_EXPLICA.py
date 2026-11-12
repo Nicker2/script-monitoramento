@@ -379,7 +379,7 @@ def desarmar_alarme(manual=False):
 # FUNÇÕES DE ÁUDIO E LOOP
 # ==============================================================================
 def preparar_audio_inicial():
-    texto_padrao = "Atenção. Senha de marcação cirúrgica."
+    texto_padrao = "Atenção! Senha de dilatação."
     log_msg("Baixando e pré-carregando áudio oficial do alarme...")
     try:
         tts = gTTS(text=texto_padrao, lang='pt')
@@ -425,7 +425,7 @@ def loop_audio_alarme():
     if not os.path.exists(ARQUIVO_OFICIAL_ALERTA):
         log_msg("⚠️ Arquivo de áudio não encontrado. Gerando arquivo de emergência agora...")
         try:
-            texto_padrao = "Atenção. Senha de marcação cirúrgica."
+            texto_padrao = "Atenção! Senha de dilatação."
             tts = gTTS(text=texto_padrao, lang='pt')
             tts.save(ARQUIVO_OFICIAL_ALERTA)
             log_msg("Áudio de emergência gerado com sucesso!")
@@ -663,7 +663,7 @@ janela_logs.pack(fill=tk.BOTH, expand=True)
 frame_estudio = tk.LabelFrame(root, text="Estúdio de Voz", bg="#1e1e1e", fg="yellow", font=("Consolas", 10))
 frame_estudio.pack(fill=tk.X, padx=10, pady=5)
 entry_voz = tk.Entry(frame_estudio, font=("Consolas", 12), width=60)
-entry_voz.insert(0, "Atenção. Senha de marcação cirúrgica.")
+entry_voz.insert(0, "Atenção! Senha de dilatação.")
 entry_voz.pack(side=tk.LEFT, padx=10, pady=10, expand=True, fill=tk.X)
 tk.Button(frame_estudio, text="Testar Texto", bg="#ff9900", fg="black", font=("Consolas", 10, "bold"), command=lambda: threading.Thread(target=gerar_e_tocar_alerta_teste, args=(entry_voz.get(), "todos"), daemon=True).start()).pack(side=tk.RIGHT, padx=10)
 

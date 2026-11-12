@@ -27,7 +27,7 @@ Este script automatiza o monitoramento da página de lista de espera do Feegow: 
 
 Quando é, dispara dois alertas ao mesmo tempo:
 
-- **Sonoro** — mensagem falada em português ("Atenção. Senha de marcação cirúrgica."), tocada em **todos os dispositivos de áudio** da máquina (caixa, TV, monitor com som).
+- **Sonoro** — mensagem falada em português ("Atenção! Senha de dilatação."), tocada em **todos os dispositivos de áudio** da máquina (caixa, TV, monitor com som).
 - **Visual** — janela vermelha piscando no centro da tela com o botão **CIENTE**.
 
 Clicando em **CIENTE**, a chamada é assumida e os alertas ficam silenciados pelo tempo definido em `pausa_minutos` (padrão 15). Se a senha desaparecer da fila sem ninguém clicar, o alarme se desarma sozinho.
