@@ -183,6 +183,7 @@ CREDENCIAIS_PADRAO = {
 _FILTROS = dict(FILTROS_PADRAO)
 _FILTROS_MTIME = 0.0
 _CRED_USUARIO_LOGADO = None
+_JANELA_CONFIG = None
 
 
 def normalizar_texto(texto):
@@ -1079,6 +1080,274 @@ def iniciar_tray():
     tray_icon.run()
 
 # ==============================================================================
+# ⚙️ JANELA DE CONFIGURAÇÕES (senhas que alertam/ignoram, login e alertas)
+# ==============================================================================
+def _sincronizar_termos_filtro(dados):
+    """Garante termo de busca (XPath) para toda senha das listas.
+
+    Sem isso, uma senha adicionada pela janela nunca seria encontrada no modal,
+    porque o XPath só procura pelos termos_gatilho.
+    """
+    termos = [str(t).strip() for t in (dados.get("termos_gatilho") or []) if str(t).strip()]
+    chaves = [normalizar_texto(t) for t in termos]
+    entradas = list(dados.get("whitelist") or []) + list(dados.get("blacklist") or [])
+    for entrada in entradas:
+        texto = str(entrada).strip()
+        if not texto:
+            continue
+        norm = normalizar_texto(texto)
+        if not any(chave and chave in norm for chave in chaves):
+            termos.append(texto.upper())
+            chaves.append(norm)
+    dados["termos_gatilho"] = termos
+    return dados
+
+
+def abrir_configuracoes():
+    """Abre a janela de configuração. Salva direto nos JSONs (mesmo formato)."""
+    from tkinter import ttk, messagebox
+
+    global _JANELA_CONFIG
+    try:
+        if _JANELA_CONFIG is not None and _JANELA_CONFIG.winfo_exists():
+            _JANELA_CONFIG.lift()
+            _JANELA_CONFIG.focus_force()
+            return
+    except Exception:
+        pass
+
+    def ler_json(caminho):
+        try:
+            with open(caminho, "r", encoding="utf-8-sig") as arquivo:
+                dados = json.load(arquivo)
+            return dados if isinstance(dados, dict) else {}
+        except Exception:
+            return {}
+
+    # garante que os arquivos existem antes de abrir a tela
+    carregar_credenciais()
+    carregar_filtros(forcar=True)
+    filtros = ler_json(ARQ_FILTROS)
+    credenciais = ler_json(ARQ_CREDENCIAIS)
+
+    janela = tk.Toplevel(root)
+    janela.title("⚙️ Configurações")
+    janela.configure(bg="#1e1e1e")
+    janela.geometry("820x600")
+    janela.attributes("-topmost", True)
+    _JANELA_CONFIG = janela
+
+    abas = ttk.Notebook(janela)
+    abas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    # ---------------- aba SENHAS ----------------
+    aba_senhas = tk.Frame(abas, bg="#1e1e1e")
+    abas.add(aba_senhas, text="  Senhas  ")
+
+    tk.Label(
+        aba_senhas,
+        text="Whitelist = senhas que ALERTAM  •  Blacklist = senhas IGNORADAS\n"
+             "Digite a senha como aparece na tela do Feegow e clique em Adicionar.",
+        bg="#1e1e1e", fg="#9ca3af", font=("Consolas", 9), justify=tk.LEFT,
+    ).pack(anchor="w", padx=8, pady=(8, 4))
+
+    corpo = tk.Frame(aba_senhas, bg="#1e1e1e")
+    corpo.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+    corpo.columnconfigure(0, weight=1)
+    corpo.columnconfigure(1, weight=1)
+    corpo.rowconfigure(0, weight=1)
+
+    def montar_coluna(pai, titulo, cor, itens, coluna):
+        moldura = tk.LabelFrame(pai, text=titulo, bg="#1e1e1e", fg=cor,
+                                font=("Consolas", 10, "bold"))
+        moldura.grid(row=0, column=coluna, sticky="nsew", padx=5)
+
+        lista = tk.Listbox(moldura, bg="#111111", fg="#eeeeee", selectmode=tk.EXTENDED,
+                           height=14, activestyle="none")
+        lista.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        for item in itens:
+            lista.insert(tk.END, item)
+
+        def adicionar(_evento=None):
+            texto = entrada.get().strip()
+            if not texto:
+                return
+            existentes = [lista.get(i).upper() for i in range(lista.size())]
+            if texto.upper() in existentes:
+                entrada.delete(0, tk.END)
+                return
+            lista.insert(tk.END, texto.upper())
+            entrada.delete(0, tk.END)
+
+        def excluir(_evento=None):
+            for indice in reversed(lista.curselection()):
+                lista.delete(indice)
+
+        linha = tk.Frame(moldura, bg="#1e1e1e")
+        linha.pack(fill=tk.X, padx=6, pady=(0, 4))
+        entrada = tk.Entry(linha, bg="#111111", fg="#eeeeee", insertbackground="#eeeeee")
+        entrada.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        entrada.bind("<Return>", adicionar)
+        tk.Button(linha, text="Adicionar", command=adicionar, bg="#2d6a4f", fg="white",
+                  relief=tk.FLAT, padx=8).pack(side=tk.LEFT, padx=(4, 0))
+
+        tk.Button(moldura, text="Excluir selecionado", command=excluir, bg="#7f1d1d",
+                  fg="white", relief=tk.FLAT).pack(fill=tk.X, padx=6, pady=(0, 6))
+        return lista
+
+    lista_alertar = montar_coluna(
+        corpo, "✅ ALERTAR (whitelist)", "#4ade80",
+        filtros.get("whitelist") or [], 0,
+    )
+    lista_ignorar = montar_coluna(
+        corpo, "🚫 IGNORAR (blacklist)", "#f87171",
+        filtros.get("blacklist") or [], 1,
+    )
+
+    # ---------------- aba LOGIN ----------------
+    aba_login = tk.Frame(abas, bg="#1e1e1e")
+    abas.add(aba_login, text="  Login  ")
+
+    tk.Label(aba_login, text="Credenciais do Feegow (salvas em credenciais.json)",
+             bg="#1e1e1e", fg="#9ca3af", font=("Consolas", 9)).pack(anchor="w", padx=10, pady=(10, 6))
+
+    form = tk.Frame(aba_login, bg="#1e1e1e")
+    form.pack(anchor="w", padx=10)
+
+    def rotulo(texto, linha):
+        tk.Label(form, text=texto, bg="#1e1e1e", fg="#e5e7eb",
+                 font=("Consolas", 10)).grid(row=linha, column=0, sticky="w", pady=6)
+
+    rotulo("E-mail / usuário:", 0)
+    entrada_usuario = tk.Entry(form, width=45, bg="#111111", fg="#eeeeee",
+                               insertbackground="#eeeeee")
+    entrada_usuario.insert(0, str(credenciais.get("usuario") or ""))
+    entrada_usuario.grid(row=0, column=1, padx=8, pady=6, sticky="w")
+
+    rotulo("Senha:", 1)
+    entrada_senha = tk.Entry(form, width=45, show="•", bg="#111111", fg="#eeeeee",
+                             insertbackground="#eeeeee")
+    entrada_senha.insert(0, str(credenciais.get("senha") or ""))
+    entrada_senha.grid(row=1, column=1, padx=8, pady=6, sticky="w")
+
+    mostrar = tk.BooleanVar(value=False)
+
+    def alternar_senha():
+        entrada_senha.configure(show="" if mostrar.get() else "•")
+
+    tk.Checkbutton(form, text="mostrar senha", variable=mostrar, command=alternar_senha,
+                   bg="#1e1e1e", fg="#9ca3af", selectcolor="#111111",
+                   activebackground="#1e1e1e", activeforeground="#e5e7eb",
+                   font=("Consolas", 9)).grid(row=2, column=1, sticky="w", padx=8)
+
+    rotulo("Rota de login:", 3)
+    combo_rota = ttk.Combobox(form, width=12, state="readonly",
+                              values=["auto", "sso", "legado"])
+    combo_rota.set(str(credenciais.get("rota_login") or "auto").lower())
+    combo_rota.grid(row=3, column=1, padx=8, pady=6, sticky="w")
+
+    tk.Label(aba_login,
+             text="auto = tenta o SSO (/main/sso/) e depois a rota antiga (?P=Login)\n"
+                  "sso  = só a rota nova   •   legado = só a rota antiga\n\n"
+                  "As alterações de login valem no próximo login (ao reiniciar o script).",
+             bg="#1e1e1e", fg="#6b7280", font=("Consolas", 9), justify=tk.LEFT
+             ).pack(anchor="w", padx=10, pady=(10, 0))
+
+    # ---------------- aba ALERTAS ----------------
+    aba_alertas = tk.Frame(abas, bg="#1e1e1e")
+    abas.add(aba_alertas, text="  Alertas  ")
+
+    var_tela = tk.BooleanVar(value=_para_bool(filtros.get("alerta_tela"), True))
+    var_voz = tk.BooleanVar(value=_para_bool(filtros.get("alerta_voz"), True))
+
+    for texto, var in (
+        ("Mostrar a janela vermelha piscando na tela", var_tela),
+        ("Tocar a voz sintetizada", var_voz),
+    ):
+        tk.Checkbutton(aba_alertas, text=texto, variable=var, bg="#1e1e1e", fg="#e5e7eb",
+                       selectcolor="#111111", activebackground="#1e1e1e",
+                       activeforeground="#e5e7eb", font=("Consolas", 10), anchor="w"
+                       ).pack(anchor="w", padx=14, pady=6)
+
+    form2 = tk.Frame(aba_alertas, bg="#1e1e1e")
+    form2.pack(anchor="w", padx=14, pady=(10, 0))
+    tk.Label(form2, text="Pausa após o CIENTE (min):", bg="#1e1e1e", fg="#e5e7eb",
+             font=("Consolas", 10)).grid(row=0, column=0, sticky="w", pady=4)
+    entrada_pausa = tk.Entry(form2, width=8, bg="#111111", fg="#eeeeee",
+                             insertbackground="#eeeeee")
+    entrada_pausa.insert(0, str(filtros.get("pausa_minutos") or 15))
+    entrada_pausa.grid(row=0, column=1, padx=8)
+
+    tk.Label(form2, text="Intervalo entre buscas (s):", bg="#1e1e1e", fg="#e5e7eb",
+             font=("Consolas", 10)).grid(row=1, column=0, sticky="w", pady=4)
+    entrada_intervalo = tk.Entry(form2, width=8, bg="#111111", fg="#eeeeee",
+                                 insertbackground="#eeeeee")
+    entrada_intervalo.insert(0, str(filtros.get("intervalo_busca_segundos") or 10))
+    entrada_intervalo.grid(row=1, column=1, padx=8)
+
+    # ---------------- rodapé ----------------
+    rodape = tk.Frame(janela, bg="#1e1e1e")
+    rodape.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+    def coletar_lista(lista):
+        return [lista.get(i).strip() for i in range(lista.size()) if lista.get(i).strip()]
+
+    def salvar():
+        global _CRED_USUARIO_LOGADO
+        try:
+            dados = ler_json(ARQ_FILTROS)
+            dados["whitelist"] = coletar_lista(lista_alertar)
+            dados["blacklist"] = coletar_lista(lista_ignorar)
+            dados["alerta_tela"] = bool(var_tela.get())
+            dados["alerta_voz"] = bool(var_voz.get())
+            try:
+                dados["pausa_minutos"] = max(1, int(float(entrada_pausa.get().replace(",", "."))))
+            except Exception:
+                dados["pausa_minutos"] = 15
+            try:
+                dados["intervalo_busca_segundos"] = max(1, int(float(
+                    entrada_intervalo.get().replace(",", "."))))
+            except Exception:
+                dados["intervalo_busca_segundos"] = 10
+            _sincronizar_termos_filtro(dados)
+            _gravar_json(ARQ_FILTROS, dados)
+
+            cred = ler_json(ARQ_CREDENCIAIS)
+            cred["usuario"] = entrada_usuario.get().strip()
+            cred["senha"] = entrada_senha.get()
+            cred["rota_login"] = (combo_rota.get() or "auto").lower()
+            _gravar_json(ARQ_CREDENCIAIS, cred)
+
+            carregar_filtros(forcar=True)
+            global _CRED_USUARIO_LOGADO
+            _CRED_USUARIO_LOGADO = None  # força relogar com as credenciais novas
+
+            log_msg(
+                f"⚙️ Configurações salvas: {len(dados['whitelist'])} alertar / "
+                f"{len(dados['blacklist'])} ignorar | "
+                f"alerta_tela={'ON' if dados['alerta_tela'] else 'OFF'} "
+                f"alerta_voz={'ON' if dados['alerta_voz'] else 'OFF'}."
+            )
+            messagebox.showinfo(
+                "Configurações salvas",
+                "filtros.json e credenciais.json atualizados.\n\n"
+                "As senhas e os alertas valem na hora.\n"
+                "O login novo é usado no próximo login (ao reiniciar o script).",
+                parent=janela,
+            )
+        except Exception as e:
+            messagebox.showerror("Erro ao salvar", str(e), parent=janela)
+
+    tk.Button(rodape, text="💾 Salvar", command=salvar, bg="#2d6a4f", fg="white",
+              relief=tk.FLAT, padx=18, pady=6, font=("Consolas", 10, "bold")
+              ).pack(side=tk.RIGHT)
+    tk.Button(rodape, text="Fechar", command=janela.destroy, bg="#374151", fg="white",
+              relief=tk.FLAT, padx=14, pady=6).pack(side=tk.RIGHT, padx=8)
+    tk.Label(rodape, text=f"Arquivos: {os.path.basename(ARQ_FILTROS)} e {os.path.basename(ARQ_CREDENCIAIS)}",
+             bg="#1e1e1e", fg="#4b5563", font=("Consolas", 8)).pack(side=tk.LEFT)
+
+
+# ==============================================================================
 # INTERFACE GRÁFICA (TKINTER) E INICIALIZAÇÃO
 # ==============================================================================
 root = tk.Tk()
@@ -1087,6 +1356,15 @@ root.geometry("800x650")
 root.configure(bg="#1e1e1e")
 root.withdraw()
 root.protocol("WM_DELETE_WINDOW", ao_fechar_janela)
+
+frame_topo = tk.Frame(root, bg="#1e1e1e")
+frame_topo.pack(fill=tk.X, padx=10, pady=(8, 0))
+tk.Button(
+    frame_topo, text="⚙️ Configurações", command=abrir_configuracoes,
+    bg="#1f3a5f", fg="white", relief=tk.FLAT, padx=14, pady=6,
+    font=("Consolas", 10, "bold"), cursor="hand2", activebackground="#2b4f7d",
+    activeforeground="white",
+).pack(side=tk.LEFT)
 
 frame_logs = tk.Frame(root, bg="#1e1e1e")
 frame_logs.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)

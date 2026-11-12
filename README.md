@@ -336,7 +336,17 @@ Basta salvar o arquivo — o script recarrega sozinho.
 
   O Chrome roda fora da tela e o programa fica no ícone da bandeja (perto do relógio).
 
-### 4. Bandeja do Windows
+### 4. Janela de configurações (⚙️ no painel)
+
+No painel (ícone da bandeja → Mostrar), o botão **`⚙️ Configurações`** abre uma janela com três abas:
+
+- **Senhas** — duas listas: `✅ ALERTAR (whitelist)` e `🚫 IGNORAR (blacklist)`. Digite a senha como aparece na tela do Feegow e clique em **Adicionar** (ou Enter); para remover, selecione e clique em **Excluir selecionado**. Se você adicionar uma senha de uma família nova, o `termos_gatilho` é atualizado sozinho para o XPath conseguir achá-la no modal.
+- **Login** — e-mail/usuário, senha (com opção "mostrar senha") e a rota (`auto` / `sso` / `legado`).
+- **Alertas** — liga/desliga a janela piscando e a voz, além de `pausa_minutos` e `intervalo_busca_segundos`.
+
+O botão **💾 Salvar** grava direto em `filtros.json` e `credenciais.json` — **mesmo formato de antes** (`_comentario` e as chaves de URL são preservadas). Senhas e alertas passam a valer na hora; o login novo é usado no próximo login (ao reiniciar o script).
+
+### 5. Bandeja do Windows
 
 - **Clique no ícone** → mostra/oculta o painel e o navegador.
 - **Botão direito → Encerrar Sistema** → fecha o Chrome, apaga o áudio temporário e sai.
@@ -377,6 +387,13 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Janela de configurações (⚙️)
+
+- Botão **⚙️ Configurações** no topo do painel abre um `Toplevel` com `ttk.Notebook`: aba **Senhas** (duas `Listbox` — alertar/ignorar — com adicionar/excluir), aba **Login** (usuário, senha, rota) e aba **Alertas** (tela/voz/pausa/intervalo).
+- Salvar **relê o JSON, altera só as chaves que a tela gerencia e regrava** — `_comentario` e `url_login`/`url_login_sso`/`url_lista_espera` sobrevivem.
+- Ao salvar, `_sincronizar_termos_filtro()` garante que toda senha das listas tenha cobertura em `termos_gatilho` (senão o XPath nunca acharia a senha nova); `carregar_filtros(forcar=True)` recarrega na hora e `_CRED_USUARIO_LOGADO = None` força reler as credenciais no próximo login.
+- Teste sem abrir janela: `exec` do módulo com `__name__` diferente de `__main__` (não entra no `mainloop`), `abrir_configuracoes()`, localizar os widgets com `winfo_children()` recursivo e `button.invoke()`, com `messagebox.showinfo/showerror` stubados — e rodar numa **cópia temporária** da pasta para não tocar nos JSONs reais.
 
 ### Auto-instalação das dependências
 
