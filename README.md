@@ -143,7 +143,7 @@ Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo,
 
 | Campo | O que faz |
 | :--- | :--- |
-| `termos_gatilho` | Textos usados só para **localizar o botão da senha** no modal (qualquer um deles serve). |
+| `termos_gatilho` | Textos usados no **XPath de busca do botão** da senha (`//button[contains(...)]`). Escreva como aparece na tela, **com acento**: `DILATAÇÃO` não acha `DILATACAO`. Basta um dos termos casar para o botão ser localizado. |
 | `comparacao` | `contem` (padrão) ou `exata` — como as listas casam com o texto da senha. |
 | `whitelist` | Senhas que **DEVEM alertar**. Tem prioridade: vence a blacklist. |
 | `blacklist` | Senhas que devem ser **IGNORADAS**. |
@@ -370,7 +370,7 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 
 - **`whitelist` = ALERTAR** e **`blacklist` = IGNORAR**, com a whitelist vencendo sempre. Antes a lógica era "MC obrigatório + blacklist de falsos positivos", o que ignorava justamente as senhas de dilatação.
 - **`padrao_sem_match`**: decide o que fazer com senha fora das duas listas (padrão `ignorar`, para nunca alarmar em cima de senha desconhecida).
-- **`termos_gatilho`** (lista) substitui o termo único: o botão da senha é localizado por qualquer um dos termos, então o script passou a achar `DILATAÇÃO - CCC`, `AUTO REFRATOR (SEM DILATAR)` e `MC`.
+- **`termos_gatilho`** (lista) alimenta o **XPath de busca do botão** (`//button[contains(translate(normalize-space(.), 'abc...', 'ABC...'), 'TERMO')]`, o método tradicional com `WebDriverWait`). Mantenha o termo escrito como aparece na tela — o XPath ignora maiúscula/minúscula, mas **não ignora acento**.
 - Normalização passou a remover **hífens, barras, parênteses e símbolos de ordinal** (`°`/`º`), então `DILATAÇÃO-CCC`, `dilatacao ccc` e `RECEPÇÃO 1º ANDAR` casam com as listas.
 
 ### Alertas ligáveis/desligáveis + login SSO

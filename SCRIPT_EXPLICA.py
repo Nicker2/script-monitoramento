@@ -195,9 +195,13 @@ def carregar_filtros(forcar=False):
         combinado = dict(FILTROS_PADRAO)
         combinado.update({k: v for k, v in dados.items() if not str(k).startswith("_") and v is not None})
         _FILTROS = {
-            "termos_gatilho": _lista_normalizada(
-                combinado.get("termos_gatilho") or combinado.get("termo_gatilho")
-            ),
+            # termos_gatilho NÃO é normalizado: ele vai literal para o XPath de
+            # busca do botão (o texto da tela é comparado como está escrito).
+            "termos_gatilho": [
+                str(t).strip() for t in (
+                    combinado.get("termos_gatilho") or [combinado.get("termo_gatilho") or ""]
+                ) if str(t).strip()
+            ],
             "comparacao": str(combinado.get("comparacao") or "contem").strip().lower(),
             "padrao_sem_match": str(combinado.get("padrao_sem_match") or "ignorar").strip().lower(),
             "blacklist": _lista_normalizada(combinado.get("blacklist")),
@@ -807,32 +811,41 @@ def fechar_modal():
     except:
         pass
 
+def _xpath_botao_senha(termos):
+    """Monta o XPath (método tradicional) que acha o botão da senha.
+
+    Usa contains() no texto do botão, com translate() para ignorar a diferença
+    entre maiúsculas e minúsculas — os acentos precisam bater como aparecem na
+    tela, então os termos do filtros.json devem ser escritos igual ao Feegow.
+    """
+    condicoes = []
+    for termo in termos:
+        seguro = termo.replace("'", "")
+        condicoes.append(
+            "contains(translate(normalize-space(.), "
+            "'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), "
+            f"'{seguro}')"
+        )
+    return "//button[" + " or ".join(condicoes) + "]"
+
+
 def _localizar_botao_senha(cfg, timeout=8.0):
-    """Acha o botão da senha no modal pelo texto (usa os 'termos_gatilho').
+    """Acha o botão da senha no modal com WebDriverWait + XPath.
 
     Retorna None quando não há senha no modal — é assim que se detecta que a
     senha saiu da fila e o alarme pode ser desarmado.
     """
-    termos = cfg.get("termos_gatilho") or []
-    fim = time.time() + timeout
-    while time.time() < fim:
-        try:
-            botoes = driver.find_elements(By.CSS_SELECTOR, "button")
-        except Exception:
-            botoes = []
-        for botao in botoes:
-            try:
-                if not botao.is_displayed():
-                    continue
-                texto = normalizar_texto(botao.text)
-                if len(texto) < 2:
-                    continue
-                if not termos or any(termo in texto for termo in termos):
-                    return botao
-            except Exception:
-                continue
-        time.sleep(0.3)
-    return None
+    termos = [str(t).strip().upper() for t in (cfg.get("termos_gatilho") or []) if str(t).strip()]
+    if not termos:
+        return None
+    try:
+        return WebDriverWait(driver, timeout).until(
+            EC.visibility_of_element_located((By.XPATH, _xpath_botao_senha(termos)))
+        )
+    except TimeoutException:
+        return None
+    except Exception:
+        return None
 
 
 def verificar_botao_explicacao():
