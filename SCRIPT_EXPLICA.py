@@ -1429,21 +1429,44 @@ def on_tray_ocultar(icon, item):
     except Exception:
         pass
 
-def on_tray_exit(icon, item):
-    log_msg("Desligando sistema. Limpando memória e rastros...")
-    icon.stop()
-    
-    if driver:
-        try: driver.quit()
-        except: pass
-        
+def encerrar_sistema():
+    """Fecha o Chrome, apaga o áudio temporário e sai limpo.
+
+    Usado pelo menu da bandeja e pelo Ctrl+C no console (antes o Ctrl+C
+    estourava um traceback de KeyboardInterrupt e deixava o Chrome aberto).
+    """
+    try:
+        if tray_icon is not None:
+            tray_icon.stop()
+    except Exception:
+        pass
+
+    try:
+        if driver is not None:
+            # driver.quit() pode travar se a thread do Selenium estiver no meio de uma chamada
+            fechador = threading.Thread(target=driver.quit, daemon=True)
+            fechador.start()
+            fechador.join(timeout=5)
+    except Exception:
+        pass
+
+    try:
+        _encerrar_instancias_antigas(_pasta_perfil_chrome())
+    except Exception:
+        pass
+
     try:
         if os.path.exists(ARQUIVO_OFICIAL_ALERTA):
             os.remove(ARQUIVO_OFICIAL_ALERTA)
-    except:
+    except Exception:
         pass
-        
+
     os._exit(0)
+
+
+def on_tray_exit(icon, item):
+    log_msg("Desligando sistema. Limpando memória e rastros...")
+    encerrar_sistema()
 
 def iniciar_tray():
     global tray_icon
@@ -1823,4 +1846,10 @@ if __name__ == "__main__":
         threading.Thread(target=iniciar_selenium, daemon=True).start()
 
     threading.Thread(target=iniciar_tray, daemon=True).start()
-    root.mainloop()
+
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        # Ctrl+C no console: encerra sem traceback e sem deixar Chrome aberto
+        log_msg("⌨️ Ctrl+C detectado — encerrando o sistema e fechando o navegador...")
+        encerrar_sistema()

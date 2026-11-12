@@ -392,6 +392,7 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 | Uma senha que existe na fila não é identificada | O modal do Feegow mostra **vários tickets ao mesmo tempo**. O script agora avalia **todos** (antes pegava só o primeiro: se fosse `AGENDAMENTOS`, a `DILATAÇÃO - CCC` logo abaixo nunca era lida). No log deve aparecer uma linha `🔎 Senha '...' -> ...` para cada ticket do modal. |
 | `Could not reach host` / `Connection reset` ao iniciar | O `webdriver_manager` não conseguiu baixar o chromedriver (rede/firewall/proxy). Baixe manualmente em <https://googlechromelabs.github.io/chrome-for-testing/> e salve como `chromedriver.exe` na pasta do script — aí ele não precisa de internet para isso. |
 | `Unable to obtain driver for chrome` | Mesma causa acima: chromedriver ausente. A mensagem nova do script já mostra a pasta onde salvar o arquivo. |
+| Ctrl+C no console mostrava traceback e deixava o Chrome aberto | Corrigido: `KeyboardInterrupt` é tratado, o Chrome é fechado e o áudio temporário apagado (`⌨️ Ctrl+C detectado — encerrando...`). |
 
 ---
 
@@ -435,6 +436,12 @@ Regras de segurança:
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Encerramento limpo (Ctrl+C e menu da bandeja)
+
+- `KeyboardInterrupt` dentro do `root.mainloop()` (Ctrl+C no console) estourava um traceback e **deixava o Chrome aberto**. Agora o `mainloop` está dentro de `try/except KeyboardInterrupt` e chama `encerrar_sistema()`.
+- `encerrar_sistema()` concentra a saída limpa: para o ícone da bandeja, fecha o driver (com timeout de 5s numa thread, para não travar se o Selenium estiver no meio de uma chamada), encerra Chrome/chromedriver que ainda estejam segurando o nosso perfil, apaga o mp3 temporário e sai com código 0.
+- O menu **Encerrar Sistema** usa exatamente a mesma função — antes cada caminho fazia a limpeza por conta própria.
 
 ### Todas as senhas do modal são avaliadas
 
