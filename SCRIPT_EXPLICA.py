@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import threading
 import datetime
@@ -9,6 +10,80 @@ import unicodedata
 import tkinter as tk
 from tkinter import scrolledtext
 import tempfile # NOVA BIBLIOTECA PARA USAR A PASTA TEMP DO WINDOWS
+import subprocess
+
+# ==============================================================================
+# 📦 AUTO-INSTALAÇÃO DAS DEPENDÊNCIAS (roda ANTES dos imports de terceiros)
+# ==============================================================================
+MODULOS_NECESSARIOS = [
+    ("psutil", "psutil", True),
+    ("gtts", "gTTS", True),
+    ("pygame", "pygame", True),
+    ("pystray", "pystray", True),
+    ("PIL", "Pillow", True),
+    ("selenium", "selenium", True),
+    ("webdriver_manager", "webdriver-manager", False),  # opcional: só fallback do driver
+]
+
+
+def _modulo_disponivel(nome_modulo: str) -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(nome_modulo) is not None
+    except (ImportError, ValueError, AttributeError):
+        return False
+
+
+def garantir_dependencias() -> bool:
+    """Confere os pacotes de terceiros e instala com pip o que estiver faltando.
+
+    Roda antes de qualquer import pesado, então o programa não morre com
+    ModuleNotFoundError em um PC novo.
+    """
+    faltando = [pacote for modulo, pacote, _obr in MODULOS_NECESSARIOS
+                if not _modulo_disponivel(modulo)]
+    if not faltando:
+        return True
+
+    print("=" * 70)
+    print("📦 Dependências faltando: " + ", ".join(faltando))
+    print("   Instalando com pip — na primeira vez pode levar alguns minutos...")
+    print("=" * 70, flush=True)
+
+    tentativas = [
+        [sys.executable, "-m", "pip", "install", "--upgrade"] + faltando,
+        [sys.executable, "-m", "pip", "install", "--user"] + faltando,
+    ]
+    for comando in tentativas:
+        try:
+            subprocess.check_call(comando)
+            break
+        except Exception as e:
+            print(f"⚠️ Falhou: {' '.join(comando[:4])} ... -> {e}", flush=True)
+
+    try:
+        import importlib
+        importlib.invalidate_caches()
+    except Exception:
+        pass
+
+    ainda_faltando = [pacote for modulo, pacote, obrig in MODULOS_NECESSARIOS
+                      if obrig and not _modulo_disponivel(modulo)]
+    if ainda_faltando:
+        print("=" * 70)
+        print("🛑 Não foi possível instalar: " + ", ".join(ainda_faltando))
+        print("   Rode manualmente na pasta do script:")
+        print(f"   {sys.executable} -m pip install " + " ".join(ainda_faltando))
+        print("=" * 70, flush=True)
+        return False
+
+    print("✅ Dependências instaladas. Continuando...\n", flush=True)
+    return True
+
+
+if not garantir_dependencias():
+    sys.exit(1)
+
 
 import psutil
 from gtts import gTTS

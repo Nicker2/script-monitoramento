@@ -263,11 +263,13 @@ Bibliotecas Python (todas no `requirements.txt`):
    cd script-monitoramento
    ```
 
-2. Instale as dependências:
+2. (Opcional) Instale as dependências — **o script faz isso sozinho** se faltar alguma:
 
    ```bash
    pip install -r requirements.txt
    ```
+
+   Ao iniciar, ele confere `psutil`, `gTTS`, `pygame`, `pystray`, `Pillow`, `selenium` (e `webdriver-manager`, opcional) e roda `pip install` do que estiver faltando **antes** de abrir a interface. Se o pip não conseguir instalar, ele mostra o comando exato para você rodar à mão e não abre o programa pela metade.
 
 3. Coloque o **chromedriver** na mesma pasta do `SCRIPT_EXPLICA.py`:
 
@@ -375,6 +377,12 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Auto-instalação das dependências
+
+- Antes de qualquer `import` de terceiros, o script roda `garantir_dependencias()`: confere `psutil`, `gTTS`, `pygame`, `pystray`, `Pillow`, `selenium` e `webdriver-manager` com `importlib.util.find_spec` e, se faltar algum, chama `pip install` (primeiro normal, depois `--user`) na própria versão do Python que está rodando.
+- Se não conseguir instalar, imprime o comando manual e encerra — evita abrir interface pela metade com `ModuleNotFoundError`.
+- `webdriver_manager` é opcional: se não instalar, o script segue (o chromedriver local é a via principal).
 
 ### chromedriver local (não depende de download)
 
