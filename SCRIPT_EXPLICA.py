@@ -1257,25 +1257,6 @@ def _xpath_botao_senha(termos):
     return "//button[" + " or ".join(condicoes) + "]"
 
 
-def _localizar_botao_senha(cfg, timeout=8.0):
-    """Acha o botão da senha no modal com WebDriverWait + XPath.
-
-    Retorna None quando não há senha no modal — é assim que se detecta que a
-    senha saiu da fila e o alarme pode ser desarmado.
-    """
-    termos = [str(t).strip().upper() for t in (cfg.get("termos_gatilho") or []) if str(t).strip()]
-    if not termos:
-        return None
-    try:
-        return WebDriverWait(driver, timeout).until(
-            EC.visibility_of_element_located((By.XPATH, _xpath_botao_senha(termos)))
-        )
-    except TimeoutException:
-        return None
-    except Exception:
-        return None
-
-
 def _texto_parece_senha(texto, cfg):
     """True quando o texto do botão é mesmo uma senha das listas do filtro.
 
@@ -1304,24 +1285,55 @@ def _texto_parece_senha(texto, cfg):
     return False
 
 
+def _senhas_na_tela(cfg, timeout=8.0):
+    """TODAS as senhas visíveis no modal: lista de (texto, elemento).
+
+    O modal do Feegow lista **várias** senhas ao mesmo tempo (uma linha por
+    ticket). Antes o script pegava só a primeira que casava com o XPath — se
+    fosse uma senha de IGNORAR (ex.: AGENDAMENTOS), a de ALERTAR (DILATAÇÃO -
+    CCC) que estava na linha de baixo nunca era avaliada.
+    """
+    termos = [str(t).strip().upper() for t in (cfg.get("termos_gatilho") or []) if str(t).strip()]
+    if not termos:
+        return []
+
+    xpath = _xpath_botao_senha(termos)
+    fim = time.time() + timeout
+    while time.time() < fim:
+        try:
+            elementos = driver.find_elements(By.XPATH, xpath)
+        except Exception:
+            elementos = []
+
+        achadas, vistos = [], set()
+        for elemento in elementos:
+            try:
+                if not elemento.is_displayed():
+                    continue
+                texto = (elemento.text or "").strip()
+            except Exception:
+                continue
+            if not texto or not _texto_parece_senha(texto, cfg):
+                continue
+            chave = normalizar_texto(texto)
+            if not chave or chave in vistos:
+                continue
+            vistos.add(chave)
+            achadas.append((texto, elemento))
+
+        if achadas:
+            return achadas
+        time.sleep(0.35)
+    return []
+
+
 def verificar_botao_explicacao():
     global alarme_ativo, _TICKET_ALARME
     cfg = carregar_filtros()
 
-    botao_senha = _localizar_botao_senha(cfg, timeout=8.0)
-    texto_botao = ""
-    if botao_senha is not None:
-        try:
-            texto_botao = botao_senha.text.strip()
-        except Exception:
-            texto_botao = ""
+    senhas = _senhas_na_tela(cfg, timeout=8.0)
 
-    # O XPath pode casar com um botão da página que só contém um termo de busca.
-    if texto_botao and not _texto_parece_senha(texto_botao, cfg):
-        texto_botao = ""
-        botao_senha = None
-
-    if botao_senha is None:
+    if not senhas:
         # Nenhuma senha no modal: se o alarme estava tocando, a senha saiu da fila
         if alarme_ativo:
             log_msg("🔇 A senha saiu da tela — desarmando o alarme.")
@@ -1329,25 +1341,27 @@ def verificar_botao_explicacao():
         fechar_modal()
         return
 
+    a_alertar = []
     try:
-        disparar, motivo = avaliar_chamada(texto_botao)
-        log_msg(f"🔎 Senha '{texto_botao}' -> {motivo}")
+        for texto, _elemento in senhas:
+            disparar, motivo = avaliar_chamada(texto)
+            log_msg(f"🔎 Senha '{texto}' -> {motivo}")
+            if disparar:
+                a_alertar.append(texto)
 
-        if disparar:
-            if (alarme_ativo and _TICKET_ALARME
-                    and normalizar_texto(texto_botao) != normalizar_texto(_TICKET_ALARME)):
-                log_msg(f"🔇 A senha na tela mudou ('{_TICKET_ALARME}' -> '{texto_botao}') — desarmando o alarme anterior.")
-                root.after(0, lambda: desarmar_alarme(manual=False))
+        if a_alertar:
             if datetime.datetime.now() > pausa_ate:
-                _TICKET_ALARME = texto_botao
+                if not alarme_ativo:
+                    log_msg(f"🚨 Senha(s) para alertar na tela: {', '.join(a_alertar)}")
+                _TICKET_ALARME = a_alertar[0]
                 disparar_estado_alarme()
             else:
                 log_msg(f"Ignorando chamada. Dentro do período de pausa até {pausa_ate.strftime('%H:%M:%S')}.")
         elif alarme_ativo:
-            log_msg("🔇 A senha na tela agora é de IGNORAR — desarmando o alarme.")
+            log_msg("🔇 Nenhuma senha para alertar na tela — desarmando o alarme.")
             root.after(0, lambda: desarmar_alarme(manual=False))
     except Exception as e:
-        log_msg(f"⚠️ Falha ao avaliar a senha: {e}")
+        log_msg(f"⚠️ Falha ao avaliar as senhas: {e}")
     finally:
         fechar_modal()
 
