@@ -176,6 +176,51 @@ FILTROS_PADRAO = {
     "volume_alarme": 100,
 }
 
+# Padrões prontos de filtro (botões na janela de configuração)
+PADROES_SENHA = {
+    "dilatacao": {
+        "rotulo": "🩺 Dilatação",
+        "comparacao": "contem",
+        "whitelist": [
+            "DILATAÇÃO - CCC", "DILATAÇÃO - MMM", "DILATAÇÃO - FENIL",
+            "DILATAÇÃO - CMC", "DILATAÇÃO - CMM",
+            "DILATAÇÃO COM PILOCARPINA", "AUTO REFRATOR (SEM DILATAR)",
+        ],
+        "blacklist": [
+            "CONSULTA - COMUM", "EXAME - COMUM", "PRIORITÁRIA", "AGENDAMENTOS",
+            "CIRURGIA", "RETORNO", "LENTES DE CONTATO", "R2", "MC",
+            "RECEPÇÃO 1° ANDAR", "RECEPÇÃO SUS", "OUTRAS ESPECIALIDADES",
+            "RECEPÇÃO 2° ANDAR",
+        ],
+        "termos_gatilho": [
+            "DILATAÇÃO", "DILATACAO", "AUTO REFRATOR", "MC", "CONSULTA", "EXAME",
+            "PRIORITÁRIA", "AGENDAMENTOS", "CIRURGIA", "RETORNO", "LENTES", "R2",
+            "RECEPÇÃO", "OUTRAS ESPECIALIDADES",
+        ],
+    },
+    "lentes": {
+        "rotulo": "👓 Lentes",
+        "comparacao": "contem",
+        "whitelist": ["LENTES DE CONTATO"],
+        "blacklist": [],
+        "termos_gatilho": ["LENTES"],
+    },
+    "mc": {
+        "rotulo": "🔔 MC",
+        "comparacao": "exata",
+        "whitelist": ["MC"],
+        "blacklist": [],
+        "termos_gatilho": ["MC"],
+    },
+    "r2": {
+        "rotulo": "🎫 R2",
+        "comparacao": "contem",
+        "whitelist": ["R2"],
+        "blacklist": [],
+        "termos_gatilho": ["R2"],
+    },
+}
+
 CREDENCIAIS_PADRAO = {
     "usuario": "exemplo@exemplo.com",
     "senha": "exemplo",
@@ -1810,6 +1855,62 @@ def abrir_configuracoes(aba="senhas"):
              "Digite a senha como aparece na tela do Feegow e clique em Adicionar.",
         bg="#1e1e1e", fg="#9ca3af", font=("Consolas", 9), justify=tk.LEFT,
     ).pack(anchor="w", padx=8, pady=(8, 4))
+
+    def aplicar_padrao(chave_padrao):
+        """Carrega um padrão pronto: substitui as listas, salva e recarrega."""
+        padrao = PADROES_SENHA.get(chave_padrao)
+        if not padrao:
+            return
+        try:
+            atual = ler_json(ARQ_FILTROS)
+            pasta = os.path.dirname(ARQ_FILTROS)
+            _gravar_json(os.path.join(pasta, "filtros.backup.json"), atual)
+
+            novo = dict(atual)
+            novo["whitelist"] = list(padrao["whitelist"])
+            novo["blacklist"] = list(padrao["blacklist"])
+            novo["comparacao"] = padrao.get("comparacao", "contem")
+            novo["termos_gatilho"] = list(padrao["termos_gatilho"])
+            _sincronizar_termos_filtro(novo)
+            _gravar_json(ARQ_FILTROS, novo)
+            carregar_filtros(forcar=True)
+
+            lista_alertar.delete(0, tk.END)
+            for item in novo["whitelist"]:
+                lista_alertar.insert(tk.END, item)
+            lista_ignorar.delete(0, tk.END)
+            for item in novo["blacklist"]:
+                lista_ignorar.insert(tk.END, item)
+
+            log_msg(
+                f"⚡ Padrão '{padrao['rotulo']}' aplicado: "
+                f"{len(novo['whitelist'])} alertar / {len(novo['blacklist'])} ignorar "
+                f"(comparação '{novo['comparacao']}')."
+            )
+            messagebox.showinfo(
+                "Padrão aplicado",
+                f"Padrão {padrao['rotulo']} carregado e salvo.\n\n"
+                f"✅ ALERTAR: {len(novo['whitelist'])} senha(s)\n"
+                f"🚫 IGNORAR: {len(novo['blacklist'])}\n"
+                f"Comparação: {novo['comparacao']}\n\n"
+                "O filtro anterior ficou salvo em filtros.backup.json.",
+                parent=janela,
+            )
+        except Exception as e:
+            messagebox.showerror("Erro ao aplicar o padrão", str(e), parent=janela)
+
+    frame_padroes = tk.Frame(aba_senhas, bg="#1e1e1e")
+    frame_padroes.pack(fill=tk.X, padx=8, pady=(0, 6))
+    tk.Label(frame_padroes, text="⚡ Padrões prontos:", bg="#1e1e1e", fg="#9ca3af",
+             font=("Consolas", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+    for chave_padrao, dados_padrao in PADROES_SENHA.items():
+        tk.Button(
+            frame_padroes, text=dados_padrao["rotulo"],
+            bg="#1f3a5f", fg="white", relief=tk.FLAT, padx=10, pady=4,
+            cursor="hand2", font=("Consolas", 9, "bold"),
+            activebackground="#2b4f7d", activeforeground="white",
+            command=lambda c=chave_padrao: aplicar_padrao(c),
+        ).pack(side=tk.LEFT, padx=3)
 
     corpo = tk.Frame(aba_senhas, bg="#1e1e1e")
     corpo.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))

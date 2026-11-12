@@ -351,6 +351,16 @@ Basta salvar o arquivo — o script recarrega sozinho.
 No painel (ícone da bandeja → Mostrar), o botão **`⚙️ Configurações`** abre uma janela com três abas:
 
 - **Senhas** — duas listas: `✅ ALERTAR (whitelist)` e `🚫 IGNORAR (blacklist)`. Digite a senha como aparece na tela do Feegow e clique em **Adicionar** (ou Enter); para remover, selecione e clique em **Excluir selecionado**. Se você adicionar uma senha de uma família nova, o `termos_gatilho` é atualizado sozinho para o XPath conseguir achá-la no modal.
+- **⚡ Padrões prontos** (botões no topo da aba Senhas) — carrega, salva e já aplica o filtro escolhido:
+
+  | Botão | O que faz |
+  | :--- | :--- |
+  | 🩺 **Dilatação** | Alerta as 7 senhas de dilatação e ignora as outras 13 (padrão da clínica). |
+  | 👓 **Lentes** | Alerta **só** `LENTES DE CONTATO`. |
+  | 🔔 **MC** | Alerta **só** `MC`, com comparação `exata` (não pega `DILATAÇÃO - CMC`). |
+  | 🎫 **R2** | Alerta **só** `R2`. |
+
+  O filtro anterior fica salvo em `filtros.backup.json` antes de cada troca.
 - **Login** — e-mail/usuário, senha (com opção "mostrar senha") e a rota (`auto` / `sso` / `legado`).
 - **Alertas** — liga/desliga a janela piscando e a voz, além de `pausa_minutos` e `intervalo_busca_segundos`.
 
@@ -437,6 +447,13 @@ Regras de segurança:
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Padrões prontos de filtro (botões)
+
+- `PADROES_SENHA` no código guarda quatro presets: **Dilatação** (7 alertar / 13 ignorar), **Lentes**, **MC** (comparação `exata`) e **R2** (senha única em cada um dos três últimos).
+- Botões **⚡ Padrões prontos** no topo da aba **Senhas** da janela de configuração: um clique substitui `whitelist`, `blacklist`, `comparacao` e `termos_gatilho`, grava no `filtros.json`, recarrega em memória e atualiza as duas listas na tela.
+- Antes de aplicar, o filtro atual é salvo em `filtros.backup.json` — dá para voltar atrás sem perder a configuração.
+- Os presets ficam **no código**, então funcionam mesmo sem a pasta `exemplos/` (que continua existindo só como documentação).
 
 ### ChromeDriver se atualiza sozinho
 
