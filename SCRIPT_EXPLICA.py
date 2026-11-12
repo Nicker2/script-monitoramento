@@ -184,6 +184,10 @@ _FILTROS = dict(FILTROS_PADRAO)
 _FILTROS_MTIME = 0.0
 _CRED_USUARIO_LOGADO = None
 _JANELA_CONFIG = None
+_ABAS_CONFIG = None
+_SELENIUM_RODANDO = False
+_PEDIDO_CRED_PENDENTE = False
+_CRED_ARQUIVO_CRIADO = False
 
 
 def normalizar_texto(texto):
@@ -336,8 +340,9 @@ def avaliar_chamada(texto_botao):
 
 def carregar_credenciais():
     """Lê credenciais.json (cria a partir do exemplo na primeira execução)."""
-    global _CRED_USUARIO_LOGADO
+    global _CRED_USUARIO_LOGADO, _CRED_ARQUIVO_CRIADO
     if not os.path.exists(ARQ_CREDENCIAIS):
+        _CRED_ARQUIVO_CRIADO = True
         try:
             modelo = dict(CREDENCIAIS_PADRAO)
             modelo["_comentario"] = (
@@ -381,6 +386,73 @@ def carregar_credenciais():
             _CRED_USUARIO_LOGADO = credenciais["usuario"]
             log_msg(f"🔐 Credenciais carregadas para: {credenciais['usuario']}")
     return credenciais
+
+
+def credenciais_incompletas():
+    """True quando o login ainda não foi preenchido (arquivo novo/vazio/exemplo)."""
+    try:
+        cred = carregar_credenciais()
+    except Exception:
+        return True
+    usuario = (cred.get("usuario") or "").strip()
+    senha = cred.get("senha") or ""
+    if not usuario or not senha:
+        return True
+    if usuario.lower() == CREDENCIAIS_PADRAO["usuario"]:
+        return True
+    if senha == CREDENCIAIS_PADRAO["senha"]:
+        return True
+    return False
+
+
+def solicitar_credenciais(motivo="primeira_vez"):
+    """Abre a janela de configuração na aba Login pedindo usuário e senha.
+
+    Chamado quando o credenciais.json acabou de ser criado ou quando o Feegow
+    recusou a senha. Seguro para chamar de dentro da thread do Selenium.
+    """
+    global _PEDIDO_CRED_PENDENTE
+    if _PEDIDO_CRED_PENDENTE:
+        return
+    _PEDIDO_CRED_PENDENTE = True
+
+    textos = {
+        "primeira_vez": (
+            "🔐 Login do Feegow",
+            "O arquivo credenciais.json foi criado agora.\n\n"
+            "Preencha o e-mail e a senha do Feegow na aba Login e clique em Salvar.\n"
+            "Assim que salvar, o monitoramento começa sozinho.",
+        ),
+        "recusadas": (
+            "🔐 Senha recusada pelo Feegow",
+            "O Feegow não aceitou o e-mail/senha do credenciais.json.\n\n"
+            "Confira os dados na aba Login e clique em Salvar.\n"
+            "Assim que salvar, eu tento entrar de novo automaticamente.",
+        ),
+    }
+    titulo, mensagem = textos.get(motivo, textos["primeira_vez"])
+
+    def _mostrar():
+        global _PEDIDO_CRED_PENDENTE
+        try:
+            from tkinter import messagebox
+            try:
+                root.deiconify()
+                root.lift()
+            except Exception:
+                pass
+            try:
+                messagebox.showinfo(titulo, mensagem, parent=root)
+            except Exception:
+                pass
+            abrir_configuracoes(aba="login")
+        finally:
+            _PEDIDO_CRED_PENDENTE = False
+
+    try:
+        root.after(0, _mostrar)
+    except Exception:
+        _PEDIDO_CRED_PENDENTE = False
 
 
 pygame.init()
@@ -678,42 +750,49 @@ def criar_driver_chrome(options):
 
 
 def iniciar_selenium():
-    global driver, CHROME_HWND
-    log_msg("Iniciando WebDriver no 'limbo' (fora da tela)...")
-    options = webdriver.ChromeOptions()
-    prefs = {"profile.default_content_setting_values.notifications": 2}
-    options.add_experimental_option("prefs", prefs)
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--log-level=3")
-    options.add_argument("--window-position=-10000,-10000") 
-
-    try:
-        driver = criar_driver_chrome(options)
-    except Exception as e:
-        log_msg(f"🛑 O WebDriver não iniciou: {type(e).__name__}: {e}")
-        log_msg("   Baixe o chromedriver da sua versão do Chrome em "
-                "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
-                f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
-        log_msg("   O monitoramento NÃO foi iniciado. Feche e abra de novo depois de colocar o arquivo.")
+    global driver, CHROME_HWND, _SELENIUM_RODANDO
+    if _SELENIUM_RODANDO:
+        log_msg("🔁 O monitoramento já está rodando — ignorando novo pedido de início.")
         return
-
-    time.sleep(2)
-    CHROME_HWND = capturar_hwnd_pelo_pid()
-    
-    if CHROME_HWND:
-        log_msg(f"Navegador interceptado com sucesso pelo PID. HWND: {CHROME_HWND}")
-        gerenciar_janelas("ocultar")
-    else:
-        log_msg("ERRO: Não foi possível rastrear a janela do Chrome gerada.")
-    
+    _SELENIUM_RODANDO = True
     try:
-        if not fazer_login():
-            log_msg("🛑 Login não concluído — monitoramento não iniciado. Ajuste o credenciais.json e reinicie.")
+        log_msg("Iniciando WebDriver no 'limbo' (fora da tela)...")
+        options = webdriver.ChromeOptions()
+        prefs = {"profile.default_content_setting_values.notifications": 2}
+        options.add_experimental_option("prefs", prefs)
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--log-level=3")
+        options.add_argument("--window-position=-10000,-10000") 
+
+        try:
+            driver = criar_driver_chrome(options)
+        except Exception as e:
+            log_msg(f"🛑 O WebDriver não iniciou: {type(e).__name__}: {e}")
+            log_msg("   Baixe o chromedriver da sua versão do Chrome em "
+                    "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
+                    f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
+            log_msg("   O monitoramento NÃO foi iniciado. Feche e abra de novo depois de colocar o arquivo.")
             return
-        verificar_botao_chamar_senha()
-    except Exception as e:
-        log_msg(f"Erro Crítico no loop do Selenium: {e}")
+
+        time.sleep(2)
+        CHROME_HWND = capturar_hwnd_pelo_pid()
+
+        if CHROME_HWND:
+            log_msg(f"Navegador interceptado com sucesso pelo PID. HWND: {CHROME_HWND}")
+            gerenciar_janelas("ocultar")
+        else:
+            log_msg("ERRO: Não foi possível rastrear a janela do Chrome gerada.")
+
+        try:
+            if not fazer_login():
+                log_msg("🛑 Login não concluído — monitoramento não iniciado. Ajuste o credenciais.json e reinicie.")
+                return
+            verificar_botao_chamar_senha()
+        except Exception as e:
+            log_msg(f"Erro Crítico no loop do Selenium: {e}")
+    finally:
+        _SELENIUM_RODANDO = False
 
 # --- Helpers de login ------------------------------------------------------
 def _visivel(driver_alvo, seletores, timeout=12.0):
@@ -922,6 +1001,7 @@ def fazer_login():
 
     if not usuario or usuario.lower() == CREDENCIAIS_PADRAO["usuario"] or not senha:
         log_msg("🛑 credenciais.json ainda está com os dados de exemplo. Corrija antes de continuar.")
+        solicitar_credenciais("primeira_vez")
         return False
 
     if rota in ("sso", "nova", "novo"):
@@ -947,6 +1027,7 @@ def fazer_login():
                     or "e-mail recusado" in motivo):
                 log_msg("🛑 Credenciais recusadas pelo Feegow. Confira usuario/senha no credenciais.json — "
                         "parando para não travar a conta.")
+                solicitar_credenciais("recusadas")
                 return False
         time.sleep(espera)
         espera = min(espera * 1.8, 30.0)
@@ -1103,15 +1184,25 @@ def _sincronizar_termos_filtro(dados):
     return dados
 
 
-def abrir_configuracoes():
+def abrir_configuracoes(aba="senhas"):
     """Abre a janela de configuração. Salva direto nos JSONs (mesmo formato)."""
     from tkinter import ttk, messagebox
 
-    global _JANELA_CONFIG
+    global _JANELA_CONFIG, _ABAS_CONFIG
+
+    def _selecionar():
+        indice = {"senhas": 0, "login": 1, "alertas": 2}.get(str(aba).lower(), 0)
+        try:
+            if _ABAS_CONFIG is not None:
+                _ABAS_CONFIG.select(indice)
+        except Exception:
+            pass
+
     try:
         if _JANELA_CONFIG is not None and _JANELA_CONFIG.winfo_exists():
             _JANELA_CONFIG.lift()
             _JANELA_CONFIG.focus_force()
+            _selecionar()
             return
     except Exception:
         pass
@@ -1139,6 +1230,7 @@ def abrir_configuracoes():
 
     abas = ttk.Notebook(janela)
     abas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    _ABAS_CONFIG = abas
 
     # ---------------- aba SENHAS ----------------
     aba_senhas = tk.Frame(abas, bg="#1e1e1e")
@@ -1256,6 +1348,7 @@ def abrir_configuracoes():
     # ---------------- aba ALERTAS ----------------
     aba_alertas = tk.Frame(abas, bg="#1e1e1e")
     abas.add(aba_alertas, text="  Alertas  ")
+    _selecionar()
 
     var_tela = tk.BooleanVar(value=_para_bool(filtros.get("alerta_tela"), True))
     var_voz = tk.BooleanVar(value=_para_bool(filtros.get("alerta_voz"), True))
@@ -1328,11 +1421,20 @@ def abrir_configuracoes():
                 f"alerta_tela={'ON' if dados['alerta_tela'] else 'OFF'} "
                 f"alerta_voz={'ON' if dados['alerta_voz'] else 'OFF'}."
             )
+
+            iniciou_agora = False
+            if not _SELENIUM_RODANDO and not credenciais_incompletas():
+                log_msg("▶️ Iniciando o monitoramento com as credenciais novas...")
+                threading.Thread(target=iniciar_selenium, daemon=True).start()
+                iniciou_agora = True
+
             messagebox.showinfo(
                 "Configurações salvas",
                 "filtros.json e credenciais.json atualizados.\n\n"
                 "As senhas e os alertas valem na hora.\n"
-                "O login novo é usado no próximo login (ao reiniciar o script).",
+                + ("O monitoramento foi iniciado com o login novo."
+                   if iniciou_agora else
+                   "O login novo é usado no próximo login (ao reiniciar o script)."),
                 parent=janela,
             )
         except Exception as e:
@@ -1392,7 +1494,12 @@ if __name__ == "__main__":
     carregar_filtros(forcar=True)
     carregar_credenciais()
     preparar_audio_inicial()
-    
-    threading.Thread(target=iniciar_selenium, daemon=True).start()
+
+    if credenciais_incompletas():
+        log_msg("🔐 credenciais.json sem login/senha válidos — aguardando preenchimento na janela de configuração.")
+        root.after(600, lambda: solicitar_credenciais("primeira_vez"))
+    else:
+        threading.Thread(target=iniciar_selenium, daemon=True).start()
+
     threading.Thread(target=iniciar_tray, daemon=True).start()
     root.mainloop()

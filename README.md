@@ -344,7 +344,9 @@ No painel (ícone da bandeja → Mostrar), o botão **`⚙️ Configurações`**
 - **Login** — e-mail/usuário, senha (com opção "mostrar senha") e a rota (`auto` / `sso` / `legado`).
 - **Alertas** — liga/desliga a janela piscando e a voz, além de `pausa_minutos` e `intervalo_busca_segundos`.
 
-O botão **💾 Salvar** grava direto em `filtros.json` e `credenciais.json` — **mesmo formato de antes** (`_comentario` e as chaves de URL são preservadas). Senhas e alertas passam a valer na hora; o login novo é usado no próximo login (ao reiniciar o script).
+O botão **💾 Salvar** grava direto em `filtros.json` e `credenciais.json` — **mesmo formato de antes** (`_comentario` e as chaves de URL são preservadas). Senhas e alertas passam a valer na hora.
+
+**Primeira execução / senha errada:** se o `credenciais.json` não existir, o script cria o arquivo e abre uma caixa pedindo o login — já com a janela de configuração na aba **Login**. Se o Feegow recusar a senha, a mesma caixa aparece com o aviso de senha recusada. Assim que você salvar os dados certos, o monitoramento **começa sozinho**, sem precisar reiniciar.
 
 ### 5. Bandeja do Windows
 
@@ -387,6 +389,13 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Primeira execução / senha recusada (msgbox)
+
+- `credenciais_incompletas()` detecta arquivo recém-criado, usuário/senha vazios ou ainda nos valores de exemplo. Nesse caso o `__main__` **não inicia o Selenium** e chama `solicitar_credenciais("primeira_vez")`.
+- `fazer_login()` chama `solicitar_credenciais("recusadas")` quando o Feegow recusa e-mail/senha (não em conflito de sessão nem em erro de rede).
+- `solicitar_credenciais()` agenda no `root.after(0, ...)` (é chamada de dentro da thread do Selenium), mostra a msgbox e abre `abrir_configuracoes(aba="login")` — a janela já vem na aba certa e não duplica (`_PEDIDO_CRED_PENDENTE` / `_JANELA_CONFIG`).
+- Ao salvar na janela, se o Selenium não estiver rodando e as credenciais estiverem completas, `salvar()` **inicia o monitoramento sozinho** (guarda `_SELENIUM_RODANDO` evita dois laços).
 
 ### Janela de configurações (⚙️)
 
