@@ -389,6 +389,7 @@ Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitor
 | Pastas `scoped_dir...` enchendo o TEMP | São perfis temporários do ChromeDriver (60–90 MB cada). O script agora usa um **perfil fixo** em `%LOCALAPPDATA%\MonitorFeegow\chrome_profile` e limpa os órfãos no arranque. Se quiser apagar na mão, feche o monitoramento antes. |
 | Pastas `chromecrx_chrome_url_fetcher_...` / `chrome_chrome_BITS_...` | Não são do script: vêm do **instalador/atualizador do próprio Chrome** (BITS + url_fetcher). Somam poucos KB e o Windows limpa sozinho. |
 | Alarme não para depois que a senha sai | Corrigido: o script agora só considera "senha" um botão cujo texto case com as listas de `filtros.json` (antes qualquer botão da página que contivesse um termo de busca — ex. um filtro "RECEPÇÃO" — era confundido com a senha e o alarme nunca desarmava). Se ainda acontecer, veja no log se aparece `🔇 A senha saiu da tela`. |
+| Uma senha que existe na fila não é identificada | O modal do Feegow mostra **vários tickets ao mesmo tempo**. O script agora avalia **todos** (antes pegava só o primeiro: se fosse `AGENDAMENTOS`, a `DILATAÇÃO - CCC` logo abaixo nunca era lida). No log deve aparecer uma linha `🔎 Senha '...' -> ...` para cada ticket do modal. |
 | `Could not reach host` / `Connection reset` ao iniciar | O `webdriver_manager` não conseguiu baixar o chromedriver (rede/firewall/proxy). Baixe manualmente em <https://googlechromelabs.github.io/chrome-for-testing/> e salve como `chromedriver.exe` na pasta do script — aí ele não precisa de internet para isso. |
 | `Unable to obtain driver for chrome` | Mesma causa acima: chromedriver ausente. A mensagem nova do script já mostra a pasta onde salvar o arquivo. |
 
@@ -434,6 +435,12 @@ Regras de segurança:
 - A comparação de filtros passou a **ignorar acentos**, então `PRIORITARIA` agora casa com `PRIORITÁRIA`.
 - O login passou a montar o JavaScript com escape correto: **senha com apóstrofo ou aspas** não quebra mais o preenchimento do formulário.
 - Adicionado `requirements.txt` e README atualizado.
+
+### Todas as senhas do modal são avaliadas
+
+- O modal do Feegow lista **uma linha por ticket** (`AGENDAMENTOS`, `DILATAÇÃO - CCC`, ...), cada uma com um `<button title="Chamar a senha">`. O script lia apenas o **primeiro** botão que casava com o XPath: com a fila `['AGENDAMENTOS', 'DILATAÇÃO - CCC']` ele registrava `AGENDAMENTOS -> IGNORAR` e nunca olhava a CCC da linha de baixo — a senha "existia mas não era identificada".
+- Agora `_senhas_na_tela()` usa `find_elements` e devolve **todas** as senhas visíveis (filtradas por `_texto_parece_senha`, sem duplicar), e `verificar_botao_explicacao()` avalia uma por uma, disparando o alarme se **qualquer** for de ALERTAR.
+- Validado contra o DOM real do modal (Selenium em `file://`): lê as duas senhas, `CCC` alerta, `AGENDAMENTOS` ignora, e os botões `Fechar`/refresh/anular não entram.
 
 ### Bandeja do Windows e perfil do Chrome estáveis
 
