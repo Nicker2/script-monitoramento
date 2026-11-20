@@ -69,6 +69,11 @@ MAX_INICIOS_SEM_CONFIRMAR = 3                   # versão nova que não confirma
 NOME_MUTEX = "Local\\MonitorFeegowSenha"        # trava de instância única
 WATCHDOG_PERIODO_SEGUNDOS = 15                  # de quanto em quanto tempo o watchdog olha
 LOG_MAX_LINHAS_PAINEL = 3000                    # o painel guarda só as últimas N linhas
+# Assinatura das versões publicadas (Ed25519). A chave PRIVADA fica fora do
+# repositório, com quem publica; o versao.json sem assinatura válida é recusado.
+CHAVE_PUBLICA_RELEASE = "b0247314424abf05e303b11a7e6120059d6bc49528db2855027a02b2eb01902f"
+CANAIS_PERMITIDOS = ("main", "beta")
+ARQUIVOS_EXTRAS_PERMITIDOS = ("iniciar_monitor.pyw",)   # além do script, só estes se atualizam
 
 
 def _rodando_compilado():
@@ -98,6 +103,8 @@ PASTA_LOGS = os.path.join(PASTA_SCRIPT, "logs")
 ARQ_LOG = os.path.join(PASTA_LOGS, "monitor.log")
 ARQ_ESTADO_ATUALIZACAO = os.path.join(PASTA_SCRIPT, "atualizacao_estado.json")
 ARQ_ESTADO_WATCHDOG = os.path.join(PASTA_LOGS, "watchdog_estado.json")
+ARQ_HEARTBEAT = os.path.join(PASTA_LOGS, "heartbeat.json")   # lido pelo iniciar_monitor.pyw
+ARQ_STATUS = os.path.join(PASTA_LOGS, "status.json")         # estado legível (diagnóstico)
 
 
 def _configurar_log_arquivo():
@@ -119,6 +126,201 @@ def _configurar_log_arquivo():
 
 
 _LOGGER = _configurar_log_arquivo()
+
+
+def _gravar_json_atomico(caminho, dados, indent=2):
+    """Grava JSON sem nunca deixar o arquivo pela metade (queda de energia,
+    processo morto no meio): escreve num .tmp ao lado e troca com os.replace."""
+    pasta = os.path.dirname(os.path.abspath(caminho))
+    os.makedirs(pasta, exist_ok=True)
+    # nome único por processo E por thread (heartbeat é gravado por duas threads)
+    temporario = f"{caminho}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(temporario, "w", encoding="utf-8") as arquivo:
+            json.dump(dados, arquivo, ensure_ascii=False, indent=indent)
+            arquivo.write("\n")
+            arquivo.flush()
+            try:
+                os.fsync(arquivo.fileno())
+            except OSError:
+                pass
+        for tentativa in range(6):
+            try:
+                os.replace(temporario, caminho)
+                return
+            except PermissionError:
+                # antivírus/indexador segurando o arquivo por um instante
+                if tentativa == 5:
+                    raise
+                time.sleep(0.2)
+    finally:
+        try:
+            if os.path.exists(temporario):
+                os.remove(temporario)
+        except OSError:
+            pass
+
+
+# --- Assinatura Ed25519 do versao.json ------------------------------------------
+def _ed25519_verificar_puro(publica, assinatura, mensagem):
+    """Verificação Ed25519 (RFC 8032) em Python puro — usada quando o pacote
+    `cryptography` não está instalado (ex.: .exe compilado). Só verifica, não assina."""
+    p = 2 ** 255 - 19
+    q = 2 ** 252 + 27742317777372353535851937790883648493
+
+    def inv(x):
+        return pow(x, p - 2, p)
+    d = -121665 * inv(121666) % p
+    raiz_m1 = pow(2, (p - 1) // 4, p)
+
+    def recuperar_x(y, sinal):
+        if y >= p:
+            return None
+        x2 = (y * y - 1) * inv(d * y * y + 1) % p
+        if x2 == 0:
+            return None if sinal else 0
+        x = pow(x2, (p + 3) // 8, p)
+        if (x * x - x2) % p:
+            x = x * raiz_m1 % p
+        if (x * x - x2) % p:
+            return None
+        if (x & 1) != sinal:
+            x = p - x
+        return x
+
+    def descomprimir(s):
+        if len(s) != 32:
+            return None
+        y = int.from_bytes(s, "little")
+        sinal = y >> 255
+        y &= (1 << 255) - 1
+        x = recuperar_x(y, sinal)
+        return None if x is None else (x, y, 1, x * y % p)
+
+    def somar(a, b):
+        A = (a[1] - a[0]) * (b[1] - b[0]) % p
+        B = (a[1] + a[0]) * (b[1] + b[0]) % p
+        C = 2 * a[3] * b[3] * d % p
+        D = 2 * a[2] * b[2] % p
+        E, F, G, H = B - A, D - C, D + C, B + A
+        return (E * F % p, G * H % p, F * G % p, E * H % p)
+
+    def multiplicar(s, ponto):
+        resultado = (0, 1, 1, 0)
+        while s > 0:
+            if s & 1:
+                resultado = somar(resultado, ponto)
+            ponto = somar(ponto, ponto)
+            s >>= 1
+        return resultado
+
+    def iguais(a, b):
+        return (a[0] * b[2] - b[0] * a[2]) % p == 0 and (a[1] * b[2] - b[1] * a[2]) % p == 0
+
+    if len(publica) != 32 or len(assinatura) != 64:
+        return False
+    gy = 4 * inv(5) % p
+    gx = recuperar_x(gy, 0)
+    base = (gx, gy, 1, gx * gy % p)
+    ponto_a, ponto_r = descomprimir(publica), descomprimir(assinatura[:32])
+    if ponto_a is None or ponto_r is None:
+        return False
+    s = int.from_bytes(assinatura[32:], "little")
+    if s >= q:
+        return False
+    h = int.from_bytes(hashlib.sha512(assinatura[:32] + publica + mensagem).digest(), "little") % q
+    return iguais(multiplicar(s, base), somar(ponto_r, multiplicar(h, ponto_a)))
+
+
+def verificar_assinatura_ed25519(publica, assinatura, mensagem):
+    """True se a assinatura confere. Usa `cryptography` se houver; senão, Python puro."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except Exception:
+        return _ed25519_verificar_puro(publica, assinatura, mensagem)
+    try:
+        Ed25519PublicKey.from_public_bytes(publica).verify(assinatura, mensagem)
+        return True
+    except Exception:
+        return False
+
+
+def mensagem_assinada_versao(dados):
+    """Bytes assinados do versao.json: tudo menos o campo "assinatura", em JSON canônico."""
+    conteudo = {k: v for k, v in dados.items() if k != "assinatura"}
+    return json.dumps(conteudo, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def validar_versao_assinada(dados, canal_esperado=None):
+    """Recusa versao.json sem assinatura válida, sem sha256 ou de outro canal."""
+    import base64
+    if not isinstance(dados, dict):
+        raise ValueError("versao.json inválido")
+    try:
+        assinatura = base64.b64decode(str(dados.get("assinatura") or ""), validate=True)
+    except Exception:
+        assinatura = b""
+    if not assinatura or not verificar_assinatura_ed25519(
+            bytes.fromhex(CHAVE_PUBLICA_RELEASE), assinatura, mensagem_assinada_versao(dados)):
+        raise ValueError("versao.json sem assinatura válida — atualização recusada")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", str(dados.get("sha256") or "")):
+        raise ValueError("versao.json sem sha256 — atualização recusada")
+    canal = str(dados.get("canal") or "").strip()
+    if canal_esperado and canal and canal != canal_esperado:
+        raise ValueError(f"versao.json é do canal '{canal}', esperado '{canal_esperado}'")
+    return True
+
+
+# --- Senha protegida pelo Windows (DPAPI) ----------------------------------------
+class _BlobDpapi(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+_ENTROPIA_DPAPI = b"MonitorFeegow/credenciais/v1"
+PREFIXO_DPAPI = "dpapi:"
+
+
+def _dpapi(dados, proteger):
+    """CryptProtectData / CryptUnprotectData (escopo do usuário atual do Windows)."""
+    if os.name != "nt":
+        raise OSError("DPAPI só existe no Windows")
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    funcao = crypt32.CryptProtectData if proteger else crypt32.CryptUnprotectData
+    funcao.argtypes = [ctypes.POINTER(_BlobDpapi), ctypes.c_void_p, ctypes.POINTER(_BlobDpapi),
+                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(_BlobDpapi)]
+    funcao.restype = ctypes.c_bool
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+
+    buffers = []
+
+    def blob(bruto):
+        buffer = ctypes.create_string_buffer(bruto, len(bruto))
+        buffers.append(buffer)
+        return _BlobDpapi(len(bruto), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+
+    entrada, entropia, saida = blob(dados), blob(_ENTROPIA_DPAPI), _BlobDpapi()
+    if not funcao(ctypes.byref(entrada), None, ctypes.byref(entropia), None, None,
+                  0x01, ctypes.byref(saida)):   # 0x01 = CRYPTPROTECT_UI_FORBIDDEN
+        raise OSError(ctypes.get_last_error(), "DPAPI recusou os dados")
+    try:
+        return ctypes.string_at(saida.pbData, saida.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(saida.pbData, ctypes.c_void_p))
+
+
+def proteger_texto(texto):
+    import base64
+    return PREFIXO_DPAPI + base64.b64encode(_dpapi(str(texto).encode("utf-8"), True)).decode("ascii")
+
+
+def desproteger_texto(valor):
+    import base64
+    valor = str(valor or "")
+    if not valor.startswith(PREFIXO_DPAPI):
+        raise ValueError("formato desconhecido")
+    return _dpapi(base64.b64decode(valor[len(PREFIXO_DPAPI):]), False).decode("utf-8")
 
 
 def _caminho_programa_atual():
@@ -217,10 +419,7 @@ def _ler_estado_atualizacao():
 
 def _gravar_estado_atualizacao(dados):
     try:
-        temporario = ARQ_ESTADO_ATUALIZACAO + ".tmp"
-        with open(temporario, "w", encoding="utf-8") as arquivo:
-            json.dump(dados, arquivo, ensure_ascii=False, indent=2)
-        os.replace(temporario, ARQ_ESTADO_ATUALIZACAO)
+        _gravar_json_atomico(ARQ_ESTADO_ATUALIZACAO, dados)
     except Exception as e:
         _LOGGER.info(f"Não consegui gravar {ARQ_ESTADO_ATUALIZACAO}: {e}")
 
@@ -397,7 +596,6 @@ cor_alerta_atual = "red"
 
 # Usa a pasta Temporária do Windows para NUNCA dar Erro 13 de Permissão
 PASTA_TEMP = tempfile.gettempdir()
-ARQUIVO_OFICIAL_ALERTA = os.path.join(PASTA_TEMP, f"alerta_oficial_{int(time.time())}.mp3")
 
 # ==============================================================================
 # ARQUIVOS DE CONFIGURAÇÃO EXTERNOS (edite sem mexer no código)
@@ -463,6 +661,21 @@ FILTROS_PADRAO = {
     "atualizacao_canal": "main",
     # hosts usados para saber se há internet ("host" ou "host:porta", porta padrão 443)
     "hosts_verificacao_internet": ["app.feegow.com", "www.google.com"],
+    # se a sessão cair mais que isso numa hora, o monitor para de relogar por 60 min
+    "max_relogins_por_hora": 3,
+    # navegador
+    "ciclo_leve": True,                     # clique + leitura do modal num único JavaScript
+    "chrome_reinicio_diario_hora": "03:00", # reabre o Chrome 1x por dia nesse horário ("" = não)
+    "chrome_limite_ram_mb": 1500,           # reabre se o Chrome passar disso (0 = não mede)
+    "chrome_bloquear_imagens": False,       # economiza memória; teste antes de ligar
+    # heartbeat remoto (VPS/Telegram): DESLIGADO enquanto a URL estiver vazia.
+    # O token fica no credenciais.json protegido por DPAPI (aba Sistema).
+    "heartbeat_remoto_url": "",
+    "heartbeat_remoto_intervalo_minutos": 5,
+    "nome_maquina": "",
+    # horário de funcionamento (desligado = 24 h por dia, 7 dias por semana)
+    "horario_funcionamento": {"ativo": False, "inicio": "06:00", "fim": "20:00",
+                              "dias": ["seg", "ter", "qua", "qui", "sex", "sab"]},
 }
 
 # Padrões prontos de filtro (botões na janela de configuração)
@@ -549,6 +762,13 @@ _ULTIMO_RELOAD_SEM_BOTAO = 0.0
 _OFFLINE_DESDE = 0.0
 _ATUALIZACAO_ADIADA = False
 _AVISOU_GIT = False
+_AVISOU_SEM_EXE = ""
+_RELOGINS = []                   # horários dos relogins por "sessão caiu" (última hora)
+_RELOGIN_BLOQUEADO_ATE = 0.0     # > agora: parou de relogar (outro PC com o mesmo usuário?)
+_REINICIO_SEM_ESPERA = False     # reabrir o Chrome já (troca de login), sem backoff
+_TK_TICK = time.time()           # última volta do laço do Tk (vai no status.json)
+_ULTIMO_HEARTBEAT = 0.0
+_PID_CHROMEDRIVER = 0
 
 
 def normalizar_texto(texto):
@@ -617,10 +837,60 @@ def _lista_normalizada(valor):
     return [normalizar_texto(item) for item in valor if normalizar_texto(item)]
 
 
+def _hora_valida(valor, padrao=""):
+    """'3:00' / '03:00' -> '03:00'; vazio ou inválido -> padrao."""
+    achado = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", str(valor or ""))
+    if not achado or int(achado.group(1)) > 23 or int(achado.group(2)) > 59:
+        return padrao
+    return f"{int(achado.group(1)):02d}:{achado.group(2)}"
+
+
+DIAS_SEMANA = ("seg", "ter", "qua", "qui", "sex", "sab", "dom")
+
+
+def _horario_normalizado(valor):
+    base = dict(FILTROS_PADRAO["horario_funcionamento"])
+    if isinstance(valor, dict):
+        base.update(valor)
+    dias = base.get("dias") or list(DIAS_SEMANA)
+    if isinstance(dias, str):
+        dias = dias.replace(";", ",").split(",")
+    dias_ok = []
+    for dia in dias:
+        chave = normalizar_texto(dia).lower()[:3]
+        if chave in DIAS_SEMANA and chave not in dias_ok:
+            dias_ok.append(chave)
+    return {
+        "ativo": _para_bool(base.get("ativo"), False),
+        "inicio": _hora_valida(base.get("inicio"), "06:00"),
+        "fim": _hora_valida(base.get("fim"), "20:00"),
+        "dias": dias_ok or list(DIAS_SEMANA),
+    }
+
+
+def dentro_do_horario(cfg=None, agora=None):
+    """True quando o monitor deve rodar. Desligado = sempre (24/7).
+    Aceita virada da meia-noite (ex.: 22:00 -> 06:00)."""
+    horario = (cfg or carregar_filtros()).get("horario_funcionamento") or {}
+    if not horario.get("ativo"):
+        return True
+    agora = agora or datetime.datetime.now()
+    minutos = agora.hour * 60 + agora.minute
+    ini_h, ini_m = map(int, horario["inicio"].split(":"))
+    fim_h, fim_m = map(int, horario["fim"].split(":"))
+    inicio, fim = ini_h * 60 + ini_m, fim_h * 60 + fim_m
+    dia = DIAS_SEMANA[agora.weekday()]
+    dia_anterior = DIAS_SEMANA[(agora.weekday() - 1) % 7]
+    if inicio == fim:
+        return dia in horario["dias"]
+    if inicio < fim:
+        return dia in horario["dias"] and inicio <= minutos < fim
+    return (minutos >= inicio and dia in horario["dias"]) or (minutos < fim and dia_anterior in horario["dias"])
+
+
 def _gravar_json(caminho, dados):
-    with open(caminho, "w", encoding="utf-8") as arquivo:
-        json.dump(dados, arquivo, ensure_ascii=False, indent=2)
-        arquivo.write("\n")
+    """Gravação atômica (.tmp + os.replace): o JSON nunca fica pela metade."""
+    _gravar_json_atomico(caminho, dados)
 
 
 def _criar_filtros_padrao():
@@ -675,6 +945,10 @@ def carregar_filtros(forcar=False):
             "padrao_sem_match": str(combinado.get("padrao_sem_match") or "ignorar").strip().lower(),
             "blacklist": _lista_normalizada(combinado.get("blacklist")),
             "whitelist": _lista_normalizada(combinado.get("whitelist")),
+            # texto como foi digitado (com acento): usado para pré-gerar a fala
+            "whitelist_texto": [str(t).strip() for t in (
+                combinado.get("whitelist") if isinstance(combinado.get("whitelist"), list)
+                else [combinado.get("whitelist") or ""]) if str(t).strip()],
             "pausa_minutos": max(1, int(combinado.get("pausa_minutos") or 15)),
             "intervalo_busca_segundos": max(1, int(combinado.get("intervalo_busca_segundos") or 10)),
             "alerta_tela": _para_bool(combinado.get("alerta_tela"), True),
@@ -696,12 +970,26 @@ def carregar_filtros(forcar=False):
             "atualizacao_intervalo_minutos": _para_int(
                 combinado.get("atualizacao_intervalo_minutos"), 60, 10),
             "atualizacao_canal": str(combinado.get("atualizacao_canal") or CANAL_ATUALIZACAO_PADRAO).strip(),
+            "max_relogins_por_hora": _para_int(combinado.get("max_relogins_por_hora"), 3, 1),
+            "ciclo_leve": _para_bool(combinado.get("ciclo_leve"), True),
+            "chrome_reinicio_diario_hora": _hora_valida(combinado.get("chrome_reinicio_diario_hora")),
+            "chrome_limite_ram_mb": _para_int(combinado.get("chrome_limite_ram_mb"), 1500, 0),
+            "chrome_bloquear_imagens": _para_bool(combinado.get("chrome_bloquear_imagens"), False),
+            "heartbeat_remoto_url": str(combinado.get("heartbeat_remoto_url") or "").strip(),
+            "heartbeat_remoto_intervalo_minutos": _para_int(
+                combinado.get("heartbeat_remoto_intervalo_minutos"), 5, 1, 1440),
+            "nome_maquina": str(combinado.get("nome_maquina") or "").strip()[:60],
+            "horario_funcionamento": _horario_normalizado(combinado.get("horario_funcionamento")),
             "hosts_verificacao_internet": [
                 str(h).strip() for h in (combinado.get("hosts_verificacao_internet")
                                          or FILTROS_PADRAO["hosts_verificacao_internet"])
                 if str(h).strip()] or list(FILTROS_PADRAO["hosts_verificacao_internet"]),
         }
         _FILTROS_MTIME = mtime
+        try:
+            pregerar_audios_em_segundo_plano()
+        except NameError:
+            pass   # ainda importando o arquivo: a pré-geração é chamada na inicialização
         log_msg(
             f"⚙️ filtros.json carregado: {len(_FILTROS['whitelist'])} para ALERTAR, "
             f"{len(_FILTROS['blacklist'])} para IGNORAR, "
@@ -776,9 +1064,10 @@ def carregar_credenciais():
 
     combinado = dict(CREDENCIAIS_PADRAO)
     combinado.update({k: v for k, v in dados.items() if not str(k).startswith("_") and v is not None})
+    senha = _senha_do_arquivo(dados)
     credenciais = {
         "usuario": str(combinado.get("usuario") or "").strip(),
-        "senha": str(combinado.get("senha") or ""),
+        "senha": senha,
         "rota_login": str(combinado.get("rota_login") or "auto").strip().lower(),
         "url_login": str(combinado.get("url_login") or CREDENCIAIS_PADRAO["url_login"]),
         "url_login_sso": str(combinado.get("url_login_sso") or CREDENCIAIS_PADRAO["url_login_sso"]),
@@ -787,11 +1076,99 @@ def carregar_credenciais():
 
     if not credenciais["usuario"] or credenciais["usuario"].lower() == CREDENCIAIS_PADRAO["usuario"]:
         log_msg("⚠️ ATENÇÃO: credenciais.json está com os dados de EXEMPLO. Preencha usuário e senha.")
+    elif dados and "senha" in dados and "senha_protegida" not in dados:
+        _migrar_senha_para_dpapi(dados, senha)
     else:
         if _CRED_USUARIO_LOGADO != credenciais["usuario"]:
             _CRED_USUARIO_LOGADO = credenciais["usuario"]
             log_msg(f"🔐 Credenciais carregadas para: {credenciais['usuario']}")
     return credenciais
+
+
+_AVISOU_DPAPI = set()
+
+
+def _senha_do_arquivo(dados):
+    """Senha em claro (só na memória): de senha_protegida (DPAPI) ou do campo antigo."""
+    protegida = dados.get("senha_protegida") if isinstance(dados, dict) else None
+    if protegida:
+        try:
+            return desproteger_texto(protegida)
+        except Exception as e:
+            if "abrir" not in _AVISOU_DPAPI:
+                _AVISOU_DPAPI.add("abrir")
+                log_msg("🔒 Não consegui abrir a senha protegida do credenciais.json "
+                        f"({type(e).__name__}). O arquivo veio de outro usuário/PC? "
+                        "Digite a senha de novo na janela ⚙️ (aba Login).")
+            return ""
+    return str((dados or {}).get("senha") or "")
+
+
+def _pode_migrar_senha():
+    """Não migra enquanto uma versão nova está em teste: se ela for revertida,
+    a versão antiga (que só lê o campo "senha") continua conseguindo entrar."""
+    if os.name != "nt":
+        return False
+    estado = _ler_estado_atualizacao()
+    return not (estado.get("status") == "em_teste" and estado.get("para") == VERSAO)
+
+
+def _migrar_senha_para_dpapi(dados, senha):
+    if not senha or senha == CREDENCIAIS_PADRAO["senha"] or not _pode_migrar_senha():
+        return
+    try:
+        novo = dict(dados)
+        novo["senha_protegida"] = proteger_texto(senha)
+        novo.pop("senha", None)
+        _gravar_json(ARQ_CREDENCIAIS, novo)
+        log_msg("🔒 Senha do credenciais.json protegida com DPAPI (o texto puro foi apagado do arquivo).")
+    except Exception as e:
+        if "migrar" not in _AVISOU_DPAPI:
+            _AVISOU_DPAPI.add("migrar")
+            log_msg(f"⚠️ Não consegui proteger a senha com DPAPI ({type(e).__name__}); ela continua no arquivo.")
+
+
+def salvar_credenciais(usuario, senha, rota="auto"):
+    """Grava o login. A senha vai protegida por DPAPI (texto puro só se o DPAPI falhar)."""
+    try:
+        cred = _ler_json(ARQ_CREDENCIAIS)
+        if not isinstance(cred, dict):
+            cred = {}
+    except Exception:
+        cred = {}
+    cred["usuario"] = str(usuario or "").strip()
+    cred["rota_login"] = str(rota or "auto").lower()
+    try:
+        cred["senha_protegida"] = proteger_texto(senha)
+        cred.pop("senha", None)
+    except Exception as e:
+        log_msg(f"⚠️ DPAPI indisponível ({type(e).__name__}): a senha foi salva sem proteção.")
+        cred["senha"] = senha
+        cred.pop("senha_protegida", None)
+    _gravar_json(ARQ_CREDENCIAIS, cred)
+
+
+def ler_segredo(campo):
+    """Lê um segredo protegido do credenciais.json (ex.: token do heartbeat remoto)."""
+    try:
+        valor = _ler_json(ARQ_CREDENCIAIS).get(campo)
+        return desproteger_texto(valor) if valor else ""
+    except Exception:
+        return ""
+
+
+def gravar_segredo(campo, valor):
+    try:
+        cred = _ler_json(ARQ_CREDENCIAIS)
+        if not isinstance(cred, dict):
+            cred = {}
+    except Exception:
+        cred = {}
+    if valor:
+        cred[campo] = proteger_texto(valor)
+    else:
+        cred.pop(campo, None)
+    _gravar_json(ARQ_CREDENCIAIS, cred)
 
 
 def credenciais_incompletas():
@@ -856,13 +1233,15 @@ def solicitar_credenciais(motivo="primeira_vez"):
             _PEDIDO_CRED_PENDENTE = False
 
     try:
-        root.after(0, _mostrar)
+        na_ui(_mostrar)
     except Exception:
         _PEDIDO_CRED_PENDENTE = False
 
 
-pygame.init()
+# Só o áudio do pygame (antes pygame.init() subia vídeo/joystick/etc. à toa).
+# Sem placa de som o mixer falha: o monitor segue, sem voz, e avisa no log/bandeja.
 try:
+    pygame.mixer.init()
     DISPOSITIVOS_AUDIO = sdl2_audio.get_audio_device_names(False)
 except Exception:
     DISPOSITIVOS_AUDIO = []
@@ -871,6 +1250,39 @@ except Exception:
 # FUNÇÕES DE INTERFACE E JANELAS (TKINTER & OS)
 # ==============================================================================
 _FILA_LOG = queue.Queue()
+_FILA_UI = queue.Queue()
+
+
+def na_ui(funcao, *argumentos):
+    """Agenda `funcao(*argumentos)` na thread do Tk. Seguro de qualquer thread.
+
+    root.after() chamado de outra thread (Selenium, áudio, bandeja) não é
+    garantido pelo Tkinter; a fila é esvaziada pela própria thread do Tk."""
+    _FILA_UI.put((funcao, argumentos))
+
+
+def _drenar_fila_ui():
+    for _ in range(200):
+        try:
+            funcao, argumentos = _FILA_UI.get_nowait()
+        except queue.Empty:
+            break
+        try:
+            funcao(*argumentos)
+        except Exception as e:
+            log_msg(f"⚠️ Interface: erro em {getattr(funcao, '__name__', 'tarefa')}: {type(e).__name__}: {e}")
+    try:
+        root.after(100, _drenar_fila_ui)
+    except Exception:
+        pass
+
+
+_RE_EMAIL = re.compile(r"([A-Za-z0-9._%+-]{1,64})@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
+
+
+def mascarar_email(texto):
+    """'fulano.silva@clinica.com.br' -> 'fu***@clinica.com.br' (log e diagnóstico)."""
+    return _RE_EMAIL.sub(lambda m: f"{m.group(1)[:2]}***@{m.group(2)}", str(texto))
 
 
 def log_msg(mensagem):
@@ -881,6 +1293,7 @@ def log_msg(mensagem):
     Antes o Selenium escrevia direto no widget do Tk, que não é thread-safe —
     isso podia travar o painel depois de horas rodando.
     """
+    mensagem = mascarar_email(mensagem)
     timestamp = datetime.datetime.now().strftime("[%H:%M:%S]")
     texto_formatado = f"{timestamp} - {mensagem}\n"
     try:
@@ -1045,38 +1458,90 @@ def desenhar_retangulo_arredondado(canvas, x1, y1, x2, y2, radius=25, **kwargs):
               x1, y2, x1, y2-radius, x1, y2-radius, x1, y1+radius, x1, y1+radius, x1, y1]
     return canvas.create_polygon(points, **kwargs, smooth=True)
 
+def textos_janela_alarme(ticket=None, pausa_minutos=None):
+    """(título, explicação) da janela vermelha, a partir da senha real e da pausa configurada."""
+    ticket = str(ticket if ticket is not None else _TICKET_ALARME).strip()
+    if pausa_minutos is None:
+        pausa_minutos = carregar_filtros().get("pausa_minutos", 15)
+    titulo = f"NOVA SENHA '{ticket}' NA FILA" if ticket else "NOVA SENHA NA FILA"
+    unidade = "minuto" if int(pausa_minutos) == 1 else "minutos"
+    explicacao = ("Clique em CIENTE (ou Enter / Espaço / Esc) para assumir o atendimento\n"
+                  f"e pausar os alertas sonoros por {pausa_minutos} {unidade}.")
+    return titulo, explicacao
+
+
+def _fonte_que_cabe(familia, tamanho_px, peso, texto, largura_max, minimo_px=12):
+    """Diminui a fonte até o texto caber na largura (senhas com nome comprido)."""
+    from tkinter import font as tkfont
+    tamanho = int(tamanho_px)
+    while tamanho > minimo_px:
+        fonte = tkfont.Font(family=familia, size=-tamanho, weight=peso)
+        if max(fonte.measure(linha) for linha in texto.split("\n")) <= largura_max:
+            break
+        tamanho -= 1
+    return (familia, -tamanho, peso)
+
+
 def criar_janela_alarme():
     global janela_alerta, canvas_bg
     if janela_alerta is not None:
         return
+    titulo, explicacao = textos_janela_alarme()
     janela_alerta = tk.Toplevel(root)
-    janela_alerta.title("ALERTA DE MARCAÇÃO CIRÚRGICA")
-    janela_alerta.geometry("800x450")
+    janela_alerta.title("ALERTA DE SENHA")
     janela_alerta.attributes("-topmost", True)
     janela_alerta.overrideredirect(True)
     janela_alerta.configure(bg="#990000")
-    
-    pos_x = int(janela_alerta.winfo_screenwidth()/2 - 400)
-    pos_y = int(janela_alerta.winfo_screenheight()/2 - 225)
-    janela_alerta.geometry(f"+{pos_x}+{pos_y}")
 
-    canvas_bg = tk.Canvas(janela_alerta, width=800, height=280, bg="#990000", highlightthickness=0)
-    canvas_bg.pack(pady=(40, 20))
+    # Tamanho proporcional ao DPI, mas sempre cabendo na tela (notebook pequeno).
+    tela_l, tela_a = janela_alerta.winfo_screenwidth(), janela_alerta.winfo_screenheight()
+    largura = min(int(800 * _ESCALA), int(tela_l * 0.92))
+    altura = min(int(450 * _ESCALA), int(tela_a * 0.85))
+    f = min(largura / 800, altura / 450)
+    pos_x, pos_y = int((tela_l - largura) / 2), int((tela_a - altura) / 2)
+    janela_alerta.geometry(f"{largura}x{altura}+{pos_x}+{pos_y}")
 
-    desenhar_retangulo_arredondado(canvas_bg, 40, 20, 760, 260, radius=30, fill="white", outline="#cccccc", width=2)
-    canvas_bg.create_text(400, 90, text="NOVA SENHA 'MC' NA FILA", font=("Segoe UI", 28, "bold"), fill="black")
-    desenhar_icone_alerta(canvas_bg, 110, 90)
-    desenhar_icone_alerta(canvas_bg, 690, 90)
-    canvas_bg.create_text(400, 180, text="Clique em CIENTE para assumir o atendimento\ne pausar os alertas sonoros por 15 minutos.", font=("Segoe UI", 20, "bold"), fill="#555555", justify=tk.CENTER)
+    alt_canvas = int(280 * f)
+    canvas_bg = tk.Canvas(janela_alerta, width=largura, height=alt_canvas, bg="#990000", highlightthickness=0)
+    canvas_bg.pack(pady=(int(40 * f), int(20 * f)))
+    margem = int(40 * f)
+    desenhar_retangulo_arredondado(canvas_bg, margem, int(20 * f), largura - margem, int(260 * f),
+                                   radius=int(30 * f), fill="white", outline="#cccccc", width=2)
+    espaco_icones = int(150 * f)
+    canvas_bg.create_text(largura / 2, int(90 * f), text=titulo, fill="black",
+                          font=_fonte_que_cabe("Segoe UI", 37 * f, "bold", titulo, largura - 2 * espaco_icones))
+    desenhar_icone_alerta(canvas_bg, int(110 * f), int(90 * f))
+    desenhar_icone_alerta(canvas_bg, largura - int(110 * f), int(90 * f))
+    canvas_bg.create_text(largura / 2, int(185 * f), text=explicacao, fill="#555555", justify=tk.CENTER,
+                          font=_fonte_que_cabe("Segoe UI", 24 * f, "bold", explicacao, largura - 2 * margem - 20))
 
-    btn_ciente = tk.Button(janela_alerta, text=" CIENTE ", font=("Arial", 24, "bold"), bg="#dddddd", fg="black", relief=tk.RAISED, borderwidth=5, cursor="hand2", command=lambda: desarmar_alarme(manual=True))
-    btn_ciente.pack(ipady=15, ipadx=50, pady=(0, 20))
+    btn_ciente = tk.Button(janela_alerta, text=" CIENTE ", font=("Arial", -int(32 * f), "bold"), bg="#dddddd",
+                           fg="black", relief=tk.RAISED, borderwidth=5, cursor="hand2",
+                           command=lambda: desarmar_alarme(manual=True))
+    btn_ciente.pack(ipady=int(15 * f), ipadx=int(50 * f), pady=(0, int(20 * f)))
+
+    # Teclado: Enter / Espaço / Esc = CIENTE (quem está no balcão não precisa do mouse)
+    for tecla in ("<Return>", "<KP_Enter>", "<space>", "<Escape>"):
+        janela_alerta.bind(tecla, lambda _e: desarmar_alarme(manual=True))
+
+    def _puxar_foco():
+        try:
+            if janela_alerta is not None:
+                janela_alerta.lift()
+                janela_alerta.focus_force()
+                btn_ciente.focus_set()
+        except Exception:
+            pass
+    janela_alerta.after(150, _puxar_foco)
+    janela_alerta.after(1200, _puxar_foco)
     piscar_janela()
 
 def desarmar_alarme(manual=False):
+    """Roda na thread do Tk (use na_ui() de outras threads)."""
     global alarme_ativo, janela_alerta, pausa_ate, canvas_bg, _TICKET_ALARME
-    alarme_ativo = False
-    _TICKET_ALARME = ""
+    with _TRAVA_ALARME:
+        alarme_ativo = False
+        _TICKET_ALARME = ""
     if janela_alerta:
         janela_alerta.destroy()
         janela_alerta = None
@@ -1094,17 +1559,210 @@ def desarmar_alarme(manual=False):
 # ==============================================================================
 # FUNÇÕES DE ÁUDIO E LOOP
 # ==============================================================================
-def preparar_audio_inicial():
-    texto_padrao = "Atenção! Senha de dilatação."
-    log_msg("Baixando e pré-carregando áudio oficial do alarme...")
+# --- Fala: cache permanente + voz offline do Windows + bipe --------------------
+FRASE_GENERICA = "Atenção! Nova senha na fila."
+_FALHAS_AUDIO_LOGADAS = set()
+_SEM_AUDIO = ""                  # motivo quando não há como falar (vai para a bandeja)
+_GTTS_FALHOU_EM = 0.0
+_TRAVA_GERACAO = threading.Lock()
+_PREGERACAO = {"thread": None, "de_novo": False}
+
+
+def _pasta_audio():
+    """%LOCALAPPDATA%\\MonitorFeegow\\audio: as falas ficam guardadas de vez
+    (não é apagado ao sair), então a voz funciona mesmo sem internet."""
+    base = os.path.join(os.environ.get("LOCALAPPDATA", PASTA_SCRIPT), "MonitorFeegow", "audio")
     try:
-        tts = gTTS(text=texto_padrao, lang='pt')
-        tts.save(ARQUIVO_OFICIAL_ALERTA)
-        log_msg(f"Áudio oficial gerado com sucesso na pasta Temp.")
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        base = PASTA_TEMP
+    return base
+
+
+def _texto_para_fala(ticket):
+    """'DILATAÇÃO - CCC' -> 'Dilatação - CCC' (siglas curtas continuam em maiúsculas)."""
+    palavras = []
+    for palavra in str(ticket or "").split():
+        letras = "".join(c for c in palavra if c.isalpha())
+        palavras.append(palavra.capitalize() if len(letras) > 3 and palavra.isupper() else palavra)
+    return " ".join(palavras).strip()
+
+
+def frase_alarme(ticket=None):
+    """A frase falada vem da senha REAL que está na tela (nada fixo)."""
+    texto = _texto_para_fala(ticket if ticket is not None else _TICKET_ALARME)
+    return f"Atenção! Senha {texto}." if texto else FRASE_GENERICA
+
+
+def _registrar_falha_audio(tipo, erro):
+    """Cada tipo de falha aparece UMA vez no log (sem encher o arquivo)."""
+    if tipo in _FALHAS_AUDIO_LOGADAS:
+        return
+    _FALHAS_AUDIO_LOGADAS.add(tipo)
+    descricoes = {
+        "gtts": "voz do Google (gTTS) indisponível — usando a voz do Windows",
+        "sapi": "voz do Windows (SAPI) indisponível",
+        "sapi_sem_pt": "nenhuma voz pt-BR instalada no Windows — a voz offline usa a voz padrão",
+        "reproducao": "não consegui tocar o áudio (placa de som/dispositivo)",
+        "sem_arquivo": "sem nenhum áudio para a fala — tocando bipe",
+    }
+    log_msg(f"🔈 Áudio: {descricoes.get(tipo, tipo)} ({type(erro).__name__ if isinstance(erro, BaseException) else erro}"
+            f"{': ' + str(erro)[:120] if isinstance(erro, BaseException) else ''}).")
+
+
+def _definir_sem_audio(motivo):
+    global _SEM_AUDIO
+    if _SEM_AUDIO == motivo:
+        return
+    _SEM_AUDIO = motivo
+    try:
+        _atualizar_titulo_bandeja()
+    except NameError:
+        pass
+
+
+def _arquivo_cache(frase, extensao):
+    chave = hashlib.sha1(f"pt|{frase.strip()}".encode("utf-8")).hexdigest()
+    return os.path.join(_pasta_audio(), chave + extensao)
+
+
+def _gerar_mp3_gtts(frase, destino):
+    try:
+        tts = gTTS(text=frase, lang="pt", timeout=10)
+    except TypeError:   # gTTS antigo, sem o parâmetro timeout
+        tts = gTTS(text=frase, lang="pt")
+    temporario = f"{destino}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        tts.save(temporario)
+        if os.path.getsize(temporario) < 500:
+            raise ValueError("mp3 vazio")
+        os.replace(temporario, destino)
+    finally:
+        if os.path.exists(temporario):
+            try:
+                os.remove(temporario)
+            except OSError:
+                pass
+
+
+_SCRIPT_SAPI = (
+    "$ErrorActionPreference='Stop';"
+    "Add-Type -AssemblyName System.Speech;"
+    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+    "$v = $s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name -like 'pt*' } "
+    "| Select-Object -First 1;"
+    "if ($v) { $s.SelectVoice($v.VoiceInfo.Name); Write-Output 'VOZ_PT' } else { Write-Output 'VOZ_OUTRA' };"
+    "$s.SetOutputToWaveFile($env:MONITOR_TTS_DESTINO);"
+    "$s.Speak($env:MONITOR_TTS_TEXTO);"
+    "$s.Dispose()"
+)
+
+
+def _gerar_wav_sapi(frase, destino):
+    """Voz offline do Windows (System.Speech/SAPI) gravada num WAV.
+
+    O texto vai por variável de ambiente (nunca montado dentro do comando)."""
+    temporario = f"{destino}.{os.getpid()}.{threading.get_ident()}.tmp.wav"
+    ambiente = dict(os.environ, MONITOR_TTS_TEXTO=frase, MONITOR_TTS_DESTINO=temporario)
+    try:
+        saida = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-Command", _SCRIPT_SAPI],
+            env=ambiente, capture_output=True, text=True, timeout=60, creationflags=0x08000000)
+        if "VOZ_OUTRA" in (saida.stdout or ""):
+            _registrar_falha_audio("sapi_sem_pt", "sem voz pt-BR")
+        if not os.path.isfile(temporario) or os.path.getsize(temporario) < 1000:
+            raise RuntimeError((saida.stderr or saida.stdout or "WAV não gerado").strip()[:200])
+        os.replace(temporario, destino)
+    finally:
+        if os.path.exists(temporario):
+            try:
+                os.remove(temporario)
+            except OSError:
+                pass
+
+
+def obter_audio(frase, usar_rede=True):
+    """Caminho de um áudio com a frase: cache mp3 (gTTS) -> gTTS -> cache wav ->
+    voz do Windows (SAPI). None quando nada funcionou (o alarme toca bipe)."""
+    global _GTTS_FALHOU_EM
+    frase = (frase or FRASE_GENERICA).strip()
+    mp3, wav = _arquivo_cache(frase, ".mp3"), _arquivo_cache(frase, ".wav")
+    if os.path.isfile(mp3) and os.path.getsize(mp3) > 0:
+        return mp3
+    with _TRAVA_GERACAO:
+        if os.path.isfile(mp3) and os.path.getsize(mp3) > 0:
+            return mp3
+        # depois de uma falha do gTTS, espera 10 min antes de tentar a internet de novo
+        if usar_rede and time.time() - _GTTS_FALHOU_EM > 600:
+            try:
+                _gerar_mp3_gtts(frase, mp3)
+                return mp3
+            except Exception as e:
+                _GTTS_FALHOU_EM = time.time()
+                _registrar_falha_audio("gtts", e)
+        if os.path.isfile(wav) and os.path.getsize(wav) > 0:
+            return wav
+        if os.name == "nt":
+            try:
+                _gerar_wav_sapi(frase, wav)
+                return wav
+            except Exception as e:
+                _registrar_falha_audio("sapi", e)
+    return None
+
+
+def _frases_para_pregerar(cfg=None):
+    cfg = cfg or carregar_filtros()
+    frases = [FRASE_GENERICA]
+    for texto in cfg.get("whitelist_texto") or []:
+        frase = frase_alarme(texto)
+        if frase not in frases:
+            frases.append(frase)
+    return frases
+
+
+def pregerar_audios_em_segundo_plano():
+    """Gera (uma vez só, fica no cache) a fala de cada senha da whitelist, fora
+    da thread principal — a inicialização não espera a internet."""
+    atual = _PREGERACAO.get("thread")
+    if atual is not None and atual.is_alive():
+        _PREGERACAO["de_novo"] = True
+        return
+
+    def _tarefa():
+        while True:
+            _PREGERACAO["de_novo"] = False
+            geradas = 0
+            for frase in _frases_para_pregerar():
+                if _ENCERRANDO:
+                    return
+                antes = os.path.isfile(_arquivo_cache(frase, ".mp3"))
+                if obter_audio(frase) and not antes:
+                    geradas += 1
+            if geradas:
+                log_msg(f"🔊 {geradas} fala(s) de senha preparada(s) no cache de áudio.")
+            if not _PREGERACAO["de_novo"]:
+                return
+    thread = threading.Thread(target=_tarefa, name="pregeracao_audio", daemon=True)
+    _PREGERACAO["thread"] = thread
+    thread.start()
+
+
+def _bipe_alarme():
+    """Último recurso quando não existe áudio nenhum."""
+    try:
+        import winsound
+        for _ in range(3):
+            if not alarme_ativo:
+                break
+            winsound.Beep(880, 350)
+            time.sleep(0.15)
     except Exception as e:
-        log_msg(f"Erro ao pré-carregar áudio inicial: {str(e)}")
+        _registrar_falha_audio("bipe", e)
 
 _TRAVA_AUDIO = threading.Lock()      # uma fala por vez, nunca duas sobrepostas
+_TRAVA_ALARME = threading.RLock()    # estado do alarme (alarme_ativo / _TICKET_ALARME)
 _ULTIMO_ANUNCIO = {}                 # senha normalizada -> hora do último anúncio
 
 
@@ -1129,13 +1787,13 @@ def dispositivos_de_saida(cfg=None):
     return [None]
 
 
-def tocar_audio_em_dispositivo(nome_dispositivo, arquivo_audio, volume=1.0):
-    """Toca o mp3 no dispositivo informado (None = saída padrão do Windows)."""
+def tocar_audio_em_dispositivo(nome_dispositivo, arquivo_audio, volume=1.0, parar_se_desarmar=True):
+    """Toca o áudio (mp3/wav) no dispositivo informado (None = saída padrão)."""
     with _TRAVA_AUDIO:
-        _tocar_audio_sem_trava(nome_dispositivo, arquivo_audio, volume)
+        return _tocar_audio_sem_trava(nome_dispositivo, arquivo_audio, volume, parar_se_desarmar)
 
 
-def _tocar_audio_sem_trava(nome_dispositivo, arquivo_audio, volume=1.0):
+def _tocar_audio_sem_trava(nome_dispositivo, arquivo_audio, volume=1.0, parar_se_desarmar=True):
     try:
         pygame.mixer.quit()
         if nome_dispositivo:
@@ -1146,31 +1804,35 @@ def _tocar_audio_sem_trava(nome_dispositivo, arquivo_audio, volume=1.0):
         pygame.mixer.music.set_volume(max(0.0, min(1.0, volume)))
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
-            if not alarme_ativo:
+            if parar_se_desarmar and not alarme_ativo:
                 # desarmou no meio da fala: para na hora (antes ficava até acabar o mp3)
                 pygame.mixer.music.stop()
                 break
             time.sleep(0.1)
-    except Exception:
-        pass
+        _definir_sem_audio("")
+        return True
+    except Exception as e:
+        _registrar_falha_audio("reproducao", e)
+        _definir_sem_audio("não consegui tocar o som")
+        return False
+
 
 def gerar_e_tocar_alerta_teste(mensagem, modo="configurado", dispositivo_especifico=None):
     """Teste do painel. 'configurado' = mesma saída do alarme; 'unico' = um dispositivo."""
     try:
-        timestamp = int(time.time() * 1000)
-        audio_file = os.path.join(PASTA_TEMP, f"alerta_teste_{timestamp}.mp3")
-        tts = gTTS(text=mensagem, lang='pt')
-        tts.save(audio_file)
-
+        arquivo = obter_audio(mensagem)
+        if not arquivo:
+            log_msg("🔈 Teste de áudio: não consegui gerar a fala (sem internet e sem voz do Windows).")
+            return
         if modo == "unico" and dispositivo_especifico:
-            tocar_audio_em_dispositivo(dispositivo_especifico, audio_file)
+            tocar_audio_em_dispositivo(dispositivo_especifico, arquivo, parar_se_desarmar=False)
         else:
             for disp in dispositivos_de_saida():
-                tocar_audio_em_dispositivo(disp, audio_file)
-            
-        pygame.mixer.quit()
-        try: os.remove(audio_file)
-        except: pass
+                tocar_audio_em_dispositivo(disp, arquivo, parar_se_desarmar=False)
+        try:
+            pygame.mixer.quit()
+        except Exception:
+            pass
     except Exception as e:
         log_msg(f"Erro no áudio de teste: {str(e)}")
 
@@ -1183,16 +1845,12 @@ def loop_audio_alarme():
     volume = _para_int(cfg.get("volume_alarme"), 100, 0, 100) / 100.0
     inicio = time.time()
 
-    # PLANO B: Se por algum motivo o arquivo não existir (erro no startup ou apagado), cria agora!
-    if not os.path.exists(ARQUIVO_OFICIAL_ALERTA):
-        log_msg("⚠️ Arquivo de áudio não encontrado. Gerando arquivo de emergência agora...")
-        try:
-            texto_padrao = "Atenção! Senha de dilatação."
-            tts = gTTS(text=texto_padrao, lang='pt')
-            tts.save(ARQUIVO_OFICIAL_ALERTA)
-            log_msg("Áudio de emergência gerado com sucesso!")
-        except Exception as e:
-            log_msg(f"Falha ao gerar áudio de emergência. O alarme piscará sem som. Erro: {e}")
+    # A fala é a da senha que está na tela (cache -> gTTS -> voz do Windows).
+    ticket = _TICKET_ALARME
+    arquivo = obter_audio(frase_alarme(ticket)) or obter_audio(FRASE_GENERICA, usar_rede=False)
+    if not arquivo:
+        _registrar_falha_audio("sem_arquivo", "nenhuma voz disponível")
+        _definir_sem_audio("sem voz disponível (só bipe)")
 
     def estourou():
         return bool(limite_seg) and (time.time() - inicio) > limite_seg
@@ -1201,22 +1859,28 @@ def loop_audio_alarme():
         while alarme_ativo:
             if estourou():
                 log_msg(f"⏱️ Alarme tocou por {limite_seg}s e foi desarmado automaticamente.")
-                root.after(0, lambda: desarmar_alarme(manual=False))
+                na_ui(desarmar_alarme, False)
                 break
 
-            if os.path.exists(ARQUIVO_OFICIAL_ALERTA):
+            tocou = False
+            if arquivo and os.path.exists(arquivo):
                 for disp in dispositivos_de_saida(cfg):
                     if not alarme_ativo:
                         break
-                    tocar_audio_em_dispositivo(disp, ARQUIVO_OFICIAL_ALERTA, volume)
-                _ULTIMO_ANUNCIO[normalizar_texto(_TICKET_ALARME)] = time.time()
+                    tocou = tocar_audio_em_dispositivo(disp, arquivo, volume) or tocou
+            if not tocou and alarme_ativo:
+                _bipe_alarme()
+            _ULTIMO_ANUNCIO[normalizar_texto(ticket)] = time.time()
 
             for _ in range(intervalo):
                 if not alarme_ativo or estourou():
                     break
                 time.sleep(1)
 
-        pygame.mixer.quit()
+        try:
+            pygame.mixer.quit()
+        except Exception:
+            pass
     except Exception as e:
         log_msg(f"Erro no loop de alarme: {e}")
 
@@ -1241,6 +1905,11 @@ def anunciado_recentemente(ticket, cfg=None):
 
 
 def disparar_estado_alarme():
+    with _TRAVA_ALARME:   # duas threads nunca disparam o mesmo alarme duas vezes
+        _disparar_estado_alarme_sem_trava()
+
+
+def _disparar_estado_alarme_sem_trava():
     global alarme_ativo
     if alarme_ativo:
         return
@@ -1264,7 +1933,7 @@ def disparar_estado_alarme():
     ativos = []
     if quer_tela:
         ativos.append("janela na tela")
-        root.after(0, criar_janela_alarme)
+        na_ui(criar_janela_alarme)
     if quer_voz:
         ativos.append("voz")
         threading.Thread(target=loop_audio_alarme, daemon=True).start()
@@ -1634,7 +2303,8 @@ def criar_driver_chrome(options):
 
 ARGUMENTOS_CHROME = (
     "--disable-gpu",
-    "--no-sandbox",
+    # (sem --no-sandbox: a sandbox do Chrome fica LIGADA; só é desligada como
+    #  último recurso se o Chrome não abrir de jeito nenhum — ver _abrir_chrome)
     "--log-level=3",
     "--window-position=-10000,-10000",
     # sem "Restaurar páginas?" e sem telas de primeira execução
@@ -1651,12 +2321,20 @@ ARGUMENTOS_CHROME = (
     "--disable-renderer-backgrounding",
     "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,HighEfficiencyModeAvailable",
     "--disable-hang-monitor",
+    # mais leve para PC fraco: nada rodando em segundo plano além da Lista de Espera
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-sync",
+    "--mute-audio",
+    "--disk-cache-size=52428800",     # cache em disco limitado a 50 MB
 )
+ARGUMENTO_SEM_SANDBOX = "--no-sandbox"
 
 
 def _abrir_chrome():
     """Abre o Chrome (perfil fixo; se falhar, temporário). True quando abriu."""
-    global driver, CHROME_HWND
+    global driver, CHROME_HWND, _PID_CHROMEDRIVER
     log_msg("Iniciando WebDriver no 'limbo' (fora da tela)...")
 
     perfil_chrome = _pasta_perfil_chrome()
@@ -1666,33 +2344,57 @@ def _abrir_chrome():
         _limpar_sessao_antiga(perfil_chrome)
         _marcar_perfil_limpo(perfil_chrome)
 
-    def montar_options(com_perfil=True):
+    cfg = carregar_filtros()
+
+    def montar_options(com_perfil=True, sem_sandbox=False):
         opcoes = webdriver.ChromeOptions()
-        opcoes.add_experimental_option(
-            "prefs", {"profile.default_content_setting_values.notifications": 2})
+        prefs = {"profile.default_content_setting_values.notifications": 2}
+        if cfg.get("chrome_bloquear_imagens"):
+            prefs["profile.managed_default_content_settings.images"] = 2
+        opcoes.add_experimental_option("prefs", prefs)
         for argumento in ARGUMENTOS_CHROME:
             opcoes.add_argument(argumento)
+        if sem_sandbox:
+            opcoes.add_argument(ARGUMENTO_SEM_SANDBOX)
         if com_perfil and perfil_chrome:
             opcoes.add_argument(f"--user-data-dir={perfil_chrome}")
         return opcoes
 
     _limpar_scoped_dirs_orfas()
 
-    try:
-        driver = criar_driver_chrome(montar_options(True))
-    except Exception as e:
-        log_msg(f"⚠️ O Chrome não abriu com o perfil fixo ({type(e).__name__}). "
-                "Tentando com perfil temporário...")
+    # 1) perfil fixo  2) perfil temporário  3) perfil temporário sem sandbox (último recurso)
+    tentativas = (
+        (True, False, None),
+        (False, False, "✔️ Chrome aberto com perfil temporário (o perfil fixo estava em uso)."),
+        (False, True, "✔️ Chrome aberto SEM sandbox (antivírus/política bloqueando a sandbox?)."),
+    )
+    driver, ultimo_erro = None, None
+    for indice, (com_perfil, sem_sandbox, aviso_ok) in enumerate(tentativas):
         try:
-            driver = criar_driver_chrome(montar_options(False))
-            log_msg("✔️ Chrome aberto com perfil temporário (o perfil fixo estava em uso).")
-        except Exception as e2:
-            log_msg(f"🛑 O WebDriver não iniciou: {type(e2).__name__}: {e2}")
-            log_msg("   Se persistir, baixe o chromedriver da sua versão do Chrome em "
-                    "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
-                    f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
+            driver = criar_driver_chrome(montar_options(com_perfil, sem_sandbox))
+            if aviso_ok:
+                log_msg(aviso_ok)
+            break
+        except Exception as erro:
+            ultimo_erro = erro
             driver = None
-            return False
+            if indice == 0:
+                log_msg(f"⚠️ O Chrome não abriu com o perfil fixo ({type(erro).__name__}). "
+                        "Tentando com perfil temporário...")
+            elif indice == 1:
+                log_msg(f"⚠️ Também não abriu com perfil temporário ({type(erro).__name__}). "
+                        "Última tentativa: sem a sandbox do Chrome (--no-sandbox)...")
+    if driver is None:
+        log_msg(f"🛑 O WebDriver não iniciou: {type(ultimo_erro).__name__}: {ultimo_erro}")
+        log_msg("   Se persistir, baixe o chromedriver da sua versão do Chrome em "
+                "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
+                f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
+        return False
+
+    try:
+        _PID_CHROMEDRIVER = int(driver.service.process.pid)
+    except Exception:
+        _PID_CHROMEDRIVER = 0
 
     # Nenhuma chamada fica pendurada para sempre: página trava -> exceção -> recuperação
     try:
@@ -1712,6 +2414,34 @@ def _abrir_chrome():
     return True
 
 
+def _matar_chromedriver_por_pid():
+    """Reserva do fechamento: mata o chromedriver que ESTE monitor abriu (e os
+    Chromes filhos dele), pelo PID guardado — pega também o Chrome aberto com
+    perfil temporário, que a limpeza por perfil não enxerga."""
+    global _PID_CHROMEDRIVER
+    pid, _PID_CHROMEDRIVER = _PID_CHROMEDRIVER, 0
+    if not pid:
+        return 0
+    mortos = 0
+    try:
+        processo = psutil.Process(pid)
+        if "chromedriver" not in (processo.name() or "").lower():
+            return 0   # o PID foi reaproveitado por outro programa: não mexe
+        for filho in processo.children(recursive=True):
+            try:
+                filho.kill()
+                mortos += 1
+            except Exception:
+                pass
+        processo.kill()
+        mortos += 1
+    except Exception:
+        return mortos
+    if mortos:
+        log_msg(f"🧹 Encerrei o chromedriver (PID {pid}) e {mortos - 1} processo(s) filho(s) que sobraram.")
+    return mortos
+
+
 def _fechar_chrome():
     """Fecha o Chrome do monitor sem travar (quit com tempo limite + kill)."""
     global driver, CHROME_HWND
@@ -1722,6 +2452,10 @@ def _fechar_chrome():
         fechador.join(timeout=10)
     try:
         _encerrar_instancias_antigas(_pasta_perfil_chrome())
+    except Exception:
+        pass
+    try:
+        _matar_chromedriver_por_pid()
     except Exception:
         pass
 
@@ -1748,11 +2482,14 @@ def iniciar_selenium():
 def loop_supervisionado():
     """Abre o Chrome, faz login e monitora. Se cair, reabre (nível 2) com
     espera crescente e limite de reinícios por hora."""
-    global _SELENIUM_RODANDO, _PEDIDO_REINICIO_CHROME, _CRED_RECUSADAS
+    global _SELENIUM_RODANDO, _PEDIDO_REINICIO_CHROME, _CRED_RECUSADAS, _REINICIO_SEM_ESPERA
     _SELENIUM_RODANDO = True
     _CRED_RECUSADAS = False
     try:
         while not _ENCERRANDO:
+            if not dentro_do_horario():
+                _aguardar_horario_funcionamento()
+                continue
             _PEDIDO_REINICIO_CHROME = ""
             try:
                 motivo = executar_sessao_chrome()
@@ -1761,7 +2498,13 @@ def loop_supervisionado():
             _fechar_chrome()
             if motivo is None or _ENCERRANDO or _CRED_RECUSADAS:
                 break
+            if motivo == MOTIVO_FORA_HORARIO:
+                continue
             log_msg(f"♻️ [N2] Reabrindo o Chrome. Motivo: {motivo}")
+            if _REINICIO_SEM_ESPERA:
+                _REINICIO_SEM_ESPERA = False
+                _dormir(2, progresso=True)
+                continue
             espera = _proxima_espera_reinicio()
             if espera > 5:
                 log_msg(f"⏳ Aguardando {espera}s antes de reabrir (proteção contra loop de reinício).")
@@ -1918,19 +2661,63 @@ def login_sso(usuario, senha, url_sso):
     return False, "o SSO não confirmou o login a tempo"
 
 
+BYPASS_MAX_TENTATIVAS = 120          # tentativas do JS antes de desistir sozinho
+BYPASS_ESPERA_INICIAL_MS = 1000      # 1 s, crescendo 1,5x até 10 s
+BYPASS_ESPERA_MAXIMA_MS = 10000
+BYPASS_LIMITE_SEGUNDOS = 300         # o Python desiste depois disso e manda o JS parar
+
+# Usuário/senha chegam como ARGUMENTOS do execute_script (arguments[0..]) — nunca
+# montados dentro do texto do JavaScript.
+JS_BYPASS_SESSAO = """
+const user = arguments[0], pass = arguments[1];
+const maxTentativas = arguments[2], esperaInicial = arguments[3], esperaMaxima = arguments[4];
+const actionUrl = window.location.href;
+window.__monitorBypassParar = false;
+window.__monitorBypass = {tentativas: 0, estado: 'rodando'};
+document.body.innerHTML = '<div style="display:flex; justify-content:center; align-items:center; height:100vh; background:#17a2b8; color:white; font-family:sans-serif; flex-direction:column;"><h2>Autenticando Acesso</h2><p>Aguardando a outra sessão liberar...</p></div>';
+(async function() {
+    let espera = esperaInicial;
+    while (!window.__monitorBypassParar && window.__monitorBypass.tentativas < maxTentativas) {
+        window.__monitorBypass.tentativas++;
+        try {
+            let res = await fetch(actionUrl, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: new URLSearchParams({User: user, password: pass})
+            });
+            let html = await res.text();
+            if (!html.includes('Este usuário já está conectado')) {
+                window.__monitorBypass.estado = 'ok';
+                window.location.href = res.url || 'https://app.feegow.com/main/';
+                return;
+            }
+        } catch (e) {}
+        await new Promise(resolve => setTimeout(resolve, espera));
+        espera = Math.min(Math.round(espera * 1.5), esperaMaxima);
+    }
+    window.__monitorBypass.estado = window.__monitorBypassParar ? 'parado' : 'desistiu';
+})();
+"""
+
+
+def _parar_bypass_js():
+    try:
+        driver.execute_script("window.__monitorBypassParar = true;")
+    except Exception:
+        pass
+
+
 def login_legado(usuario, senha, url_login):
     """Login na rota antiga (?P=Login) mantendo o bypass de sessão dupla."""
-    usuario_js = json.dumps(usuario)
-    senha_js = json.dumps(senha)
-
     driver.get(url_login)
     try:
         WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "User")))
     except TimeoutException:
         return False, "formulário antigo não encontrado"
 
-    driver.execute_script(f"document.getElementById('User').value = {usuario_js};")
-    driver.execute_script(f"document.getElementById('password').value = {senha_js};")
+    driver.execute_script(
+        "document.getElementById('User').value = arguments[0];"
+        "document.getElementById('password').value = arguments[1];", usuario, senha)
     driver.execute_script("document.getElementById('Entrar').click();")
     log_msg("Login preenchido. Aguardando validação do servidor...")
 
@@ -1945,47 +2732,28 @@ def login_legado(usuario, senha, url_login):
             return False, "credenciais recusadas na rota antiga"
         return _sessao_ativa(driver), "o Feegow não confirmou o login"
 
-    log_msg("⚠️ Sessão dupla detectada! Acionando metralhadora de Bypass Invisível...")
+    log_msg("⚠️ Sessão dupla detectada! Tentando assumir a sessão (com limite e espera crescente)...")
+    driver.execute_script(JS_BYPASS_SESSAO, usuario, senha, BYPASS_MAX_TENTATIVAS,
+                          BYPASS_ESPERA_INICIAL_MS, BYPASS_ESPERA_MAXIMA_MS)
+    log_msg(f"JS do bypass rodando (até {BYPASS_MAX_TENTATIVAS} tentativas, 1 s -> 10 s entre elas).")
 
-    js_bypass = f"""
-    const user = {usuario_js};
-    const pass = {senha_js};
-    const actionUrl = window.location.href;
-
-    document.body.innerHTML = '<div style="display:flex; justify-content:center; align-items:center; height:100vh; background:#17a2b8; color:white; font-family:sans-serif; flex-direction:column;"><h2>Autenticando Acesso</h2><p>Bypass Invisível em andamento...</p></div>';
-
-    (async function() {{
-        let sucesso = false;
-        while (!sucesso) {{
-            try {{
-                let res = await fetch(actionUrl, {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
-                    body: new URLSearchParams({{User: user, password: pass}})
-                }});
-                let html = await res.text();
-
-                if (html.includes('Este usuário já está conectado')) {{
-                    await new Promise(resolve => setTimeout(resolve, 50));
-                }} else {{
-                    sucesso = true;
-                    window.location.href = res.url || 'https://app.feegow.com/main/';
-                }}
-            }} catch (e) {{
-                await new Promise(resolve => setTimeout(resolve, 500));
-            }}
-        }}
-    }})();
-    """
-    driver.execute_script(js_bypass)
-    log_msg("JS injetado. Fuzilando requisições em background...")
-
-    fim = time.time() + 300
+    fim = time.time() + BYPASS_LIMITE_SEGUNDOS
     while time.time() < fim:
+        if _ENCERRANDO or _PEDIDO_REINICIO_CHROME:
+            _parar_bypass_js()
+            return False, "bypass interrompido (encerrando/reiniciando)"
         if _sessao_ativa(driver):
             log_msg("✔️ Bypass efetuado! Conexão estabelecida com sucesso.")
             return True, "bypass concluído"
+        try:
+            estado = driver.execute_script("return (window.__monitorBypass || {}).estado || '';")
+        except Exception:
+            estado = ""   # página navegando
+        if estado == "desistiu":
+            return False, f"o bypass desistiu depois de {BYPASS_MAX_TENTATIVAS} tentativas"
+        registrar_batimento(ok=False)
         time.sleep(1.0)
+    _parar_bypass_js()   # o Python desistiu: o JS não fica martelando o servidor
     return False, "o bypass não confirmou a sessão a tempo"
 
 
@@ -2135,43 +2903,167 @@ def _senhas_na_tela(cfg, timeout=8.0):
     return []
 
 
-def verificar_botao_explicacao():
-    global alarme_ativo, _TICKET_ALARME
+_ULTIMO_CONJUNTO_SENHAS = None   # conjunto avaliado no ciclo anterior (log só quando muda)
+_AVISO_PAUSA_ATE = None
+
+
+def verificar_botao_explicacao(textos=None):
+    """Avalia as senhas do modal. `textos` vem do ciclo leve (JS); sem ele,
+    procura os botões pelo caminho antigo (XPath + polling)."""
+    global _TICKET_ALARME, _ULTIMO_CONJUNTO_SENHAS, _AVISO_PAUSA_ATE
     cfg = carregar_filtros()
 
-    senhas = _senhas_na_tela(cfg, timeout=8.0)
+    if textos is None:
+        senhas = [texto for texto, _elemento in _senhas_na_tela(cfg, timeout=8.0)]
+    else:
+        senhas, vistos = [], set()
+        for texto in textos:
+            texto = str(texto or "").strip()
+            chave = normalizar_texto(texto)
+            if texto and chave not in vistos and _texto_parece_senha(texto, cfg):
+                vistos.add(chave)
+                senhas.append(texto)
+
+    conjunto = tuple(sorted(normalizar_texto(t) for t in senhas))
+    mudou = conjunto != _ULTIMO_CONJUNTO_SENHAS
+    _ULTIMO_CONJUNTO_SENHAS = conjunto
 
     if not senhas:
+        if mudou:
+            log_msg("🔎 Nenhuma senha das listas no modal.")
         # Nenhuma senha no modal: se o alarme estava tocando, a senha saiu da fila
         if alarme_ativo:
             log_msg("🔇 A senha saiu da tela — desarmando o alarme.")
-            root.after(0, lambda: desarmar_alarme(manual=False))
+            na_ui(desarmar_alarme, False)
         fechar_modal()
         return
 
     a_alertar = []
     try:
-        for texto, _elemento in senhas:
+        for texto in senhas:
             disparar, motivo = avaliar_chamada(texto)
-            log_msg(f"🔎 Senha '{texto}' -> {motivo}")
+            if mudou:
+                log_msg(f"🔎 Senha '{texto}' -> {motivo}")
             if disparar:
                 a_alertar.append(texto)
 
         if a_alertar:
             if datetime.datetime.now() > pausa_ate:
-                if not alarme_ativo:
-                    log_msg(f"🚨 Senha(s) para alertar na tela: {', '.join(a_alertar)}")
-                _TICKET_ALARME = a_alertar[0]
+                with _TRAVA_ALARME:
+                    if not alarme_ativo:
+                        log_msg(f"🚨 Senha(s) para alertar na tela: {', '.join(a_alertar)}")
+                    _TICKET_ALARME = a_alertar[0]
                 disparar_estado_alarme()
-            else:
+            elif _AVISO_PAUSA_ATE != pausa_ate:
+                _AVISO_PAUSA_ATE = pausa_ate
                 log_msg(f"Ignorando chamada. Dentro do período de pausa até {pausa_ate.strftime('%H:%M:%S')}.")
         elif alarme_ativo:
             log_msg("🔇 Nenhuma senha para alertar na tela — desarmando o alarme.")
-            root.after(0, lambda: desarmar_alarme(manual=False))
+            na_ui(desarmar_alarme, False)
     except Exception as e:
         log_msg(f"⚠️ Falha ao avaliar as senhas: {e}")
     finally:
         fechar_modal()
+
+
+# --- Ciclo leve: clique + leitura do modal num único JavaScript -------------------
+# Antes: WebDriverWait + clique + polling de até 8 s com dezenas de chamadas ao
+# Selenium por ciclo. Agora um execute_async_script clica no "Chamar senha",
+# espera o modal com MutationObserver (no máximo ~3 s) e devolve os textos dos
+# botões. Se não der certo, o caminho antigo continua lá (fallback).
+JS_CICLO_LEVE = r"""
+var done = arguments[arguments.length - 1];
+var termos = arguments[0] || [];
+var limiteMs = arguments[1] || 3000;
+var t0 = Date.now();
+function maiusculas(t) { return (t || '').replace(/[a-z]/g, function (c) { return c.toUpperCase(); }); }
+function visivel(el) {
+    if (!el.getClientRects().length) return false;
+    for (var n = el; n && n.nodeType === 1; n = n.parentElement) {
+        var s = window.getComputedStyle(n);
+        if (s.visibility === 'hidden' || s.display === 'none' || parseFloat(s.opacity || '1') === 0) return false;
+    }
+    return true;
+}
+function candidatos() {
+    var r = [], bs = document.getElementsByTagName('button');
+    for (var i = 0; i < bs.length; i++) {
+        var b = bs[i];
+        var norm = maiusculas((b.textContent || '').replace(/\s+/g, ' ').trim());
+        if (!norm) continue;
+        var casou = false;
+        for (var j = 0; j < termos.length; j++) { if (norm.indexOf(termos[j]) >= 0) { casou = true; break; } }
+        if (!casou || !visivel(b)) continue;
+        var texto = (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim();
+        if (texto) r.push(texto);
+    }
+    return r;
+}
+var botao = document.querySelector('button.callTicketBtn');
+if (!botao) { done({ok: false, erro: 'sem_botao'}); return; }
+if (botao.disabled || !visivel(botao)) { done({ok: false, erro: 'botao_indisponivel'}); return; }
+var antes = candidatos().join('\n'), ultimo = antes, mutacoes = 0, terminou = false;
+var obs = null, timerFim = null, timerCalmo = null;
+function finalizar(motivo) {
+    if (terminou) return;
+    terminou = true;
+    if (obs) obs.disconnect();
+    clearTimeout(timerFim); clearTimeout(timerCalmo);
+    done({ok: true, textos: candidatos(), motivo: motivo, mutacoes: mutacoes, ms: Date.now() - t0});
+}
+function conferir() {
+    var agora = candidatos(), chave = agora.join('\n');
+    if (agora.length && chave !== antes && chave !== ultimo) {
+        ultimo = chave;
+        clearTimeout(timerCalmo);
+        timerCalmo = setTimeout(function () { finalizar('modal'); }, 250);  // espera a lista assentar
+    }
+}
+obs = new MutationObserver(function (lista) { mutacoes += lista.length; conferir(); });
+obs.observe(document.body, {childList: true, subtree: true, attributes: true,
+                            attributeFilter: ['style', 'class', 'hidden', 'aria-hidden']});
+timerFim = setTimeout(function () { finalizar('limite'); }, limiteMs);
+try { botao.click(); } catch (e) {
+    terminou = true; obs.disconnect(); clearTimeout(timerFim);
+    done({ok: false, erro: 'clique: ' + e}); return;
+}
+conferir();
+"""
+CICLO_LEVE_LIMITE_MS = 3000
+_CICLO_LEVE = {"desligado": False, "falhas": 0, "ok": 0, "ms": 0}
+
+
+def ciclo_leve(cfg):
+    """Lista de textos dos botões de senha visíveis depois do clique, ou None
+    quando o caminho leve não serviu neste ciclo (aí usa o caminho antigo)."""
+    termos = [str(t).strip().upper() for t in (cfg.get("termos_gatilho") or []) if str(t).strip()]
+    try:
+        resultado = driver.execute_async_script(JS_CICLO_LEVE, termos, CICLO_LEVE_LIMITE_MS)
+    except Exception as e:
+        if _erro_chrome_morto(e):
+            raise
+        _falha_ciclo_leve(f"{type(e).__name__}")
+        return None
+    if not isinstance(resultado, dict):
+        _falha_ciclo_leve("resposta inesperada")
+        return None
+    if not resultado.get("ok"):
+        return None   # sem botão / botão ainda carregando: o caminho antigo espera até 12 s
+    if not resultado.get("mutacoes"):
+        _falha_ciclo_leve("o clique não mudou nada na página")
+        return None
+    _CICLO_LEVE["falhas"] = 0
+    _CICLO_LEVE["ok"] += 1
+    _CICLO_LEVE["ms"] = int(resultado.get("ms") or 0)
+    return [str(t) for t in (resultado.get("textos") or [])]
+
+
+def _falha_ciclo_leve(motivo):
+    _CICLO_LEVE["falhas"] += 1
+    if _CICLO_LEVE["falhas"] >= 3 and not _CICLO_LEVE["desligado"]:
+        _CICLO_LEVE["desligado"] = True
+        log_msg(f"ℹ️ Ciclo leve desligado até reabrir o Chrome ({motivo}, 3 vezes seguidas) — "
+                "usando o método antigo (clique + busca pelos botões).")
 
 
 XPATH_BOTAO_CHAMAR = ("//button[contains(concat(' ', normalize-space(@class), ' '), "
@@ -2205,6 +3097,7 @@ def verificar_botao_chamar_senha():
     falhas = 0
     ultimo_reload = time.time()
     inicio_chrome = time.time()
+    _CICLO_LEVE.update(desligado=False, falhas=0)
 
     while not _ENCERRANDO:
         if _PEDIDO_REINICIO_CHROME:
@@ -2223,10 +3116,16 @@ def verificar_botao_chamar_senha():
 
         try:
             fechar_modal()
-            botao = WebDriverWait(driver, 12).until(
-                EC.element_to_be_clickable((By.XPATH, XPATH_BOTAO_CHAMAR)))
-            botao.click()
-            verificar_botao_explicacao()
+            textos = None
+            if cfg.get("ciclo_leve", True) and not _CICLO_LEVE["desligado"]:
+                textos = ciclo_leve(cfg)
+            if textos is None:
+                botao = WebDriverWait(driver, 12).until(
+                    EC.element_to_be_clickable((By.XPATH, XPATH_BOTAO_CHAMAR)))
+                botao.click()
+                verificar_botao_explicacao()
+            else:
+                verificar_botao_explicacao(textos)
             if falhas:
                 log_msg(f"✅ Monitoramento normalizado depois de {falhas} falha(s).")
             falhas = 0
@@ -2238,6 +3137,8 @@ def verificar_botao_chamar_senha():
             falhas += 1
             estado, detalhe = diagnosticar_pagina()
             motivo = tratar_falha(estado, detalhe, falhas, url_lista)
+            if motivo == PARAR_MONITORAMENTO:
+                return None
             if motivo:
                 return motivo
             if estado == "login":
@@ -2245,6 +3146,10 @@ def verificar_botao_chamar_senha():
                 ultimo_reload = time.time()
             _dormir(5)
             continue
+
+        # Fora do horário de funcionamento: fecha o Chrome e espera (só sem alarme)
+        if not alarme_ativo and not dentro_do_horario(cfg):
+            return MOTIVO_FORA_HORARIO
 
         # Manutenção preventiva, só sem alarme tocando
         if not alarme_ativo:
@@ -2257,12 +3162,73 @@ def verificar_botao_chamar_senha():
                     if _erro_chrome_morto(e):
                         return f"Chrome parou na recarga preventiva ({type(e).__name__})"
                 ultimo_reload = time.time()
-            horas = cfg["watchdog_reiniciar_chrome_horas"]
-            if horas and time.time() - inicio_chrome > horas * 3600:
-                return f"reinício preventivo do Chrome (a cada {horas} h)"
+            motivo_preventivo = motivo_reinicio_preventivo(cfg, inicio_chrome)
+            if motivo_preventivo:
+                return motivo_preventivo
 
         _dormir(cfg["intervalo_busca_segundos"])
     return None
+
+
+MOTIVO_FORA_HORARIO = "fora do horário de funcionamento"
+_RAM = {"medido_em": 0.0, "mb": 0}
+
+
+def memoria_chrome_mb():
+    """Memória privada da árvore chromedriver -> Chrome deste monitor (MB). 0 = não deu para medir."""
+    pid = _PID_CHROMEDRIVER
+    if not pid:
+        return 0
+    try:
+        raiz = psutil.Process(pid)
+        total = 0
+        for processo in [raiz] + raiz.children(recursive=True):
+            try:
+                info = processo.memory_info()
+                total += getattr(info, "private", 0) or info.rss
+            except Exception:
+                continue
+        return int(total / (1024 * 1024))
+    except Exception:
+        return 0
+
+
+def motivo_reinicio_preventivo(cfg, inicio_chrome, agora=None):
+    """Motivo para reabrir o Chrome por prevenção (vazamento de memória do Feegow
+    depois de horas aberto), ou "" para seguir."""
+    agora = agora or time.time()
+    horas = cfg.get("watchdog_reiniciar_chrome_horas") or 0
+    if horas and agora - inicio_chrome > horas * 3600:
+        return f"reinício preventivo do Chrome (a cada {horas} h)"
+    hora = cfg.get("chrome_reinicio_diario_hora") or ""
+    if hora and agora - inicio_chrome > 3600:
+        h, m = map(int, hora.split(":"))
+        momento = datetime.datetime.fromtimestamp(agora)
+        alvo = momento.replace(hour=h, minute=m, second=0, microsecond=0)
+        if alvo > momento:
+            alvo -= datetime.timedelta(days=1)   # última vez que o relógio passou pela hora
+        if inicio_chrome < alvo.timestamp():
+            return f"reinício diário do Chrome ({hora})"
+    limite = cfg.get("chrome_limite_ram_mb") or 0
+    if limite and agora - _RAM["medido_em"] > 300:
+        _RAM["medido_em"] = agora
+        _RAM["mb"] = memoria_chrome_mb()
+        if _RAM["mb"] > limite:
+            return f"o Chrome está usando {_RAM['mb']} MB (limite {limite} MB)"
+    return ""
+
+
+def _aguardar_horario_funcionamento():
+    """Fora do horário: Chrome fechado, só espera (o watchdog não age nesta etapa)."""
+    horario = carregar_filtros().get("horario_funcionamento") or {}
+    log_msg(f"🌙 Fora do horário de funcionamento ({horario.get('inicio')}–{horario.get('fim')}, "
+            f"{', '.join(horario.get('dias') or [])}) — navegador fechado, aguardando.")
+    _definir_etapa("fora_horario")
+    _atualizar_status("offline", "Fora do horário de funcionamento")
+    while not _ENCERRANDO and not dentro_do_horario():
+        _dormir(30, progresso=True)
+    if not _ENCERRANDO:
+        log_msg("☀️ Dentro do horário de funcionamento — abrindo o monitor.")
 
 
 def diagnosticar_pagina():
@@ -2299,9 +3265,12 @@ def diagnosticar_pagina():
     return "ok_sem_botao", "página OK, mas sem o botão 'Chamar senha'"
 
 
+PARAR_MONITORAMENTO = "__parar_monitoramento__"   # tratar_falha: encerra a sessão sem reabrir
+
+
 def tratar_falha(estado, detalhe, falhas, url_lista):
     """Decide a recuperação. Devolve None (seguir) ou o motivo para reabrir o Chrome."""
-    global _ULTIMO_RELOAD_SEM_BOTAO
+    global _ULTIMO_RELOAD_SEM_BOTAO, _RELOGIN_BLOQUEADO_ATE
     if estado == "chrome_morto":
         return f"Chrome morto ({detalhe})"
 
@@ -2324,6 +3293,21 @@ def tratar_falha(estado, detalhe, falhas, url_lista):
         return None
 
     if estado == "login":
+        agora = time.time()
+        _RELOGINS[:] = [t for t in _RELOGINS if agora - t < 3600]
+        maximo = carregar_filtros().get("max_relogins_por_hora", 3)
+        if len(_RELOGINS) >= maximo:
+            _RELOGIN_BLOQUEADO_ATE = agora + 3600
+            log_msg(f"🛑 A sessão do Feegow caiu {len(_RELOGINS) + 1} vezes na última hora "
+                    f"(limite {maximo}). Outro PC usando o mesmo usuário? Parei de relogar para não "
+                    "ficar derrubando a outra máquina. Tento de novo em 60 min — ou salve o login "
+                    "na janela ⚙️ para tentar já.")
+            _atualizar_status("falha", "Sessão derrubada várias vezes — outro PC com o mesmo usuário?")
+            _avisar_bandeja("A sessão do Feegow foi derrubada várias vezes nesta hora. "
+                            "Outro PC está usando o mesmo usuário? O monitor parou de relogar por 60 min.")
+            _definir_etapa("aguardando_login")
+            return PARAR_MONITORAMENTO
+        _RELOGINS.append(agora)
         log_msg(f"🔐 [N1] {detalhe}. Entrando de novo...")
         _definir_etapa("login")
         _atualizar_status("recuperando", "Sessão caiu — entrando de novo...")
@@ -2383,6 +3367,8 @@ def registrar_batimento(ok=True):
         if not _PRIMEIRO_OK:
             _PRIMEIRO_OK = True
             confirmar_atualizacao("primeiro ciclo de monitoramento OK")
+        if agora - _ULTIMO_HEARTBEAT > 5:
+            gravar_heartbeat()
 
 
 def _dormir(segundos, progresso=False):
@@ -2463,9 +3449,7 @@ def _pode_reiniciar_processo(maximo_por_hora=4):
     lista.append(agora)
     dados["reinicios_processo"] = lista
     try:
-        os.makedirs(PASTA_LOGS, exist_ok=True)
-        with open(ARQ_ESTADO_WATCHDOG, "w", encoding="utf-8") as arquivo:
-            json.dump(dados, arquivo)
+        _gravar_json_atomico(ARQ_ESTADO_WATCHDOG, dados, indent=None)
     except Exception:
         pass
     return True
@@ -2487,6 +3471,47 @@ def reiniciar_processo(motivo, ignorar_limite=False):
     _limpeza_para_sair()
     relancar_processo_agora()
     return True
+
+
+def montar_status():
+    """Estado do monitor para o status.json, o diagnóstico e o heartbeat remoto (sem senha)."""
+    nivel, texto = _STATUS
+    agora = time.time()
+    return {
+        "versao": VERSAO,
+        "pid": os.getpid(),
+        "atualizado_em": datetime.datetime.now().isoformat(timespec="seconds"),
+        "status": nivel,
+        "texto": texto,
+        "etapa": _ETAPA,
+        "ultimo_ok_ha_s": int(agora - _ULTIMO_OK) if _ULTIMO_OK else None,
+        "ultimo_progresso_ha_s": int(agora - _ULTIMO_PROGRESSO),
+        "rodando_ha_s": int(agora - _INICIO_PROCESSO),
+        "tk_ha_s": int(agora - _TK_TICK),
+        "alarme_ativo": bool(alarme_ativo),
+        "senha_no_alarme": _TICKET_ALARME or "",
+        "sem_audio": _SEM_AUDIO,
+        "relogins_ultima_hora": len([t for t in _RELOGINS if agora - t < 3600]),
+        "relogin_bloqueado": _RELOGIN_BLOQUEADO_ATE > agora,
+        "reinicios_chrome_ultima_hora": len([t for t in _REINICIOS_CHROME if agora - t < 3600]),
+        "ciclo_leve": {"ligado": not _CICLO_LEVE["desligado"], "ciclos_ok": _CICLO_LEVE["ok"],
+                       "ultimo_ms": _CICLO_LEVE["ms"]},
+        "chrome_ram_mb": _RAM["mb"],
+        "supervisionado": _supervisionado(),
+    }
+
+
+def gravar_heartbeat():
+    """logs/heartbeat.json (o supervisor mata e relança se parar > 10 min) + logs/status.json."""
+    global _ULTIMO_HEARTBEAT
+    agora = time.time()
+    _ULTIMO_HEARTBEAT = agora
+    try:
+        _gravar_json_atomico(ARQ_HEARTBEAT, {"pid": os.getpid(), "ts": agora, "etapa": _ETAPA,
+                                             "versao": VERSAO}, indent=None)
+        _gravar_json_atomico(ARQ_STATUS, montar_status())
+    except Exception:
+        pass
 
 
 ARQ_PEDIDO_REINICIO = os.path.join(PASTA_LOGS, "reiniciar.pedido")
@@ -2515,9 +3540,11 @@ def thread_watchdog():
     """Olha o batimento a cada 15 s e age quando o monitor para de andar."""
     global _ULTIMO_PROGRESSO, _PEDIDO_RECARGA
     ultimo_giro = time.time()
+    gravar_heartbeat()
     while not _ENCERRANDO:
         time.sleep(WATCHDOG_PERIODO_SEGUNDOS)
         agora = time.time()
+        gravar_heartbeat()
         try:
             _checar_pedidos_externos()
         except Exception as e:
@@ -2543,12 +3570,15 @@ def _passo_watchdog(agora):
 
     # A thread do monitor morreu sem ninguém pedir? Religa.
     if (_MONITOR_DESEJADO and not _SELENIUM_RODANDO and not _CRED_RECUSADAS
-            and _ETAPA != "aguardando_login" and not credenciais_incompletas()):
+            and _ETAPA != "aguardando_login" and agora >= _RELOGIN_BLOQUEADO_ATE
+            and not credenciais_incompletas()):
+        if _RELOGIN_BLOQUEADO_ATE:
+            log_msg("🔐 Passaram 60 min desde o bloqueio de relogin — tentando entrar de novo.")
         log_msg("🩺 Watchdog: o monitoramento tinha parado — religando.")
         iniciar_selenium()
         return
 
-    if not _SELENIUM_RODANDO or _ETAPA in ("offline", "parado", "aguardando_login"):
+    if not _SELENIUM_RODANDO or _ETAPA in ("offline", "parado", "aguardando_login", "fora_horario"):
         return
 
     limite = cfg["watchdog_limite_sem_batimento_segundos"]
@@ -2598,10 +3628,16 @@ def _atualizar_status(nivel, texto):
     if _STATUS == (nivel, texto):
         return
     _STATUS = (nivel, texto)
+    _atualizar_titulo_bandeja()
+
+
+def _atualizar_titulo_bandeja():
+    nivel, texto = _STATUS
     try:
         if tray_icon is not None:
             tray_icon.icon = criar_icone_imagem(CORES_STATUS.get(nivel, "blue"))
-            tray_icon.title = f"Monitor Feegow v{VERSAO} — {texto}"[:120]
+            extra = " | Sem áudio" if _SEM_AUDIO else ""
+            tray_icon.title = f"Monitor Feegow v{VERSAO} — {texto}{extra}"[:120]
     except Exception:
         pass
 
@@ -2621,14 +3657,30 @@ def _texto_status():
         ultimo = f"último OK há {segundos}s" if segundos < 120 else f"último OK há {segundos // 60} min"
     else:
         ultimo = "aguardando o primeiro ciclo"
-    return nivel, f"● {texto}  |  {ultimo}  |  v{VERSAO}"
+    audio = f"  |  🔇 Sem áudio ({_SEM_AUDIO})" if _SEM_AUDIO else ""
+    return nivel, f"● {texto}  |  {ultimo}{audio}  |  v{VERSAO}"
 
 
 # ==============================================================================
 # ⬆️ ATUALIZAÇÃO AUTOMÁTICA PELO GITHUB (versao.json)
 # ==============================================================================
+_AVISOU_CANAL = ""
+
+
+def _canal_atualizacao():
+    """Só main/beta. Outro nome no filtros.json cai na main (com aviso no log)."""
+    global _AVISOU_CANAL
+    canal = str(carregar_filtros().get("atualizacao_canal") or CANAL_ATUALIZACAO_PADRAO).strip()
+    if canal in CANAIS_PERMITIDOS:
+        return canal
+    if _AVISOU_CANAL != canal:
+        _AVISOU_CANAL = canal
+        log_msg(f"⚠️ Canal de atualização '{canal}' não é permitido (só {', '.join(CANAIS_PERMITIDOS)}) — usando 'main'.")
+    return CANAL_ATUALIZACAO_PADRAO
+
+
 def _url_raw(arquivo, canal=None):
-    canal = canal or carregar_filtros().get("atualizacao_canal") or CANAL_ATUALIZACAO_PADRAO
+    canal = canal or _canal_atualizacao()
     return URL_RAW.format(repo=REPO_GITHUB, canal=canal, arquivo=arquivo) + f"?t={int(time.time())}"
 
 
@@ -2653,9 +3705,11 @@ def _versao_tupla(texto):
 
 
 def consultar_versao_remota():
-    dados = json.loads(_baixar(_url_raw(NOME_ARQUIVO_VERSAO), timeout=30).decode("utf-8-sig"))
+    canal = _canal_atualizacao()
+    dados = json.loads(_baixar(_url_raw(NOME_ARQUIVO_VERSAO, canal), timeout=30).decode("utf-8-sig"))
     if not isinstance(dados, dict) or not dados.get("versao"):
         raise ValueError("versao.json sem o campo 'versao'")
+    validar_versao_assinada(dados, canal)
     return dados
 
 
@@ -2663,7 +3717,9 @@ def validar_script_baixado(bruto, versao_esperada, sha256=""):
     """Só aceita o arquivo se for MESMO o script, inteiro e sem erro de sintaxe."""
     if len(bruto) < TAMANHO_MINIMO_SCRIPT:
         raise ValueError(f"arquivo pequeno demais ({len(bruto)} bytes)")
-    if sha256 and hashlib.sha256(bruto).hexdigest().lower() != sha256.strip().lower():
+    if not sha256:
+        raise ValueError("versao.json sem sha256: o script não é instalado sem conferência")
+    if hashlib.sha256(bruto).hexdigest().lower() != sha256.strip().lower():
         raise ValueError("sha256 não confere com o versao.json")
     texto = bruto.decode("utf-8")
     if not texto.lstrip("﻿").startswith(MARCADOR_SCRIPT):
@@ -2694,14 +3750,14 @@ def momento_seguro_para_atualizar():
     """Sem alarme tocando, sem recuperação em andamento e com a página respondendo."""
     if alarme_ativo or _PEDIDO_REINICIO_CHROME:
         return False
-    if _ETAPA in ("aguardando_login", "parado"):
+    if _ETAPA in ("aguardando_login", "parado", "fora_horario"):
         return True
     return _ETAPA == "monitorando" and _ULTIMO_OK and (time.time() - _ULTIMO_OK) < 120
 
 
 def verificar_atualizacao(manual=False):
     """Consulta o versao.json e, se houver versão nova, atualiza com segurança."""
-    global _ATUALIZACAO_ADIADA, _AVISOU_GIT
+    global _ATUALIZACAO_ADIADA, _AVISOU_GIT, _AVISOU_SEM_EXE
     cfg = carregar_filtros()
     if not manual and not cfg["auto_atualizar"]:
         return "desligada"
@@ -2717,6 +3773,8 @@ def verificar_atualizacao(manual=False):
     remoto = consultar_versao_remota()
     nova = str(remoto.get("versao")).strip()
     if _versao_tupla(nova) <= _versao_tupla(VERSAO):
+        if nova == VERSAO:
+            _atualizar_arquivos_extras(remoto)
         if manual:
             log_msg(f"✅ Já está na versão mais nova ({VERSAO}).")
         return "atual"
@@ -2724,6 +3782,12 @@ def verificar_atualizacao(manual=False):
         if manual:
             log_msg(f"⛔ A versão {nova} já falhou aqui e foi revertida — ignorando.")
         return "bloqueada"
+    if _caminho_programa_atual().lower().endswith(".exe") and not str(remoto.get("sha256_exe") or "").strip():
+        if manual or _AVISOU_SEM_EXE != nova:
+            _AVISOU_SEM_EXE = nova
+            log_msg(f"ℹ️ A versão {nova} foi publicada sem .exe (sha256_exe vazio): "
+                    f"este MonitorFeegow.exe continua na {VERSAO} até sair um .exe conferido.")
+        return "sem_exe"
     if not momento_seguro_para_atualizar():
         if not _ATUALIZACAO_ADIADA:
             log_msg(f"⏸️ Versão {nova} disponível — aguardando um momento sem chamada em andamento.")
@@ -2777,6 +3841,43 @@ def aplicar_atualizacao(remoto, estado_anterior=None):
     reiniciar_processo(f"atualização {VERSAO} -> {nova}", ignorar_limite=True)
 
 
+def _atualizar_arquivos_extras(remoto):
+    """Atualiza arquivos que acompanham o script (hoje só o iniciar_monitor.pyw),
+    conferidos pelo sha256 do versao.json ASSINADO. Só troca arquivos que já
+    existem na pasta. O supervisor novo passa a valer no próximo início dele
+    (ao entrar no Windows ou ao abrir o iniciar_monitor.pyw de novo)."""
+    extras = remoto.get("arquivos_extras")
+    if not isinstance(extras, dict) or _rodando_compilado():
+        return
+    for nome, info in extras.items():
+        if nome not in ARQUIVOS_EXTRAS_PERMITIDOS or not isinstance(info, dict):
+            continue
+        esperado = str(info.get("sha256") or "").lower()
+        destino = os.path.join(PASTA_SCRIPT, nome)
+        if not re.fullmatch(r"[0-9a-f]{64}", esperado) or not os.path.isfile(destino):
+            continue
+        try:
+            with open(destino, "rb") as arquivo:
+                atual = arquivo.read().replace(b"\r\n", b"\n")
+            if hashlib.sha256(atual).hexdigest() == esperado:
+                continue
+            bruto = _baixar(_url_raw(nome), timeout=60, limite=2_000_000)
+            if hashlib.sha256(bruto).hexdigest() != esperado:
+                raise ValueError("sha256 não confere com o versao.json")
+            compile(bruto.decode("utf-8"), nome, "exec")
+            novo, backup = destino + ".novo", destino + ".anterior"
+            with open(novo, "wb") as arquivo:
+                arquivo.write(bruto)
+            if os.path.exists(backup):
+                os.remove(backup)
+            os.replace(destino, backup)
+            os.replace(novo, destino)
+            log_msg(f"⬆️ {nome} atualizado (backup em {os.path.basename(backup)}). "
+                    "Vale a partir do próximo início do supervisor (ex.: ao entrar no Windows).")
+        except Exception as e:
+            log_msg(f"⚠️ Não consegui atualizar {nome}: {type(e).__name__}: {e}")
+
+
 def confirmar_atualizacao(motivo):
     estado = _ler_estado_atualizacao()
     if estado.get("status") != "em_teste" or estado.get("para") != VERSAO:
@@ -2786,6 +3887,10 @@ def confirmar_atualizacao(motivo):
     estado["motivo"] = motivo
     _gravar_estado_atualizacao(estado)
     log_msg(f"✅ Versão {VERSAO} confirmada ({motivo}). A anterior fica guardada como .anterior.")
+    try:
+        carregar_credenciais()   # agora pode proteger a senha com DPAPI (migração adiada no teste)
+    except Exception:
+        pass
 
 
 def _checar_confirmacao_por_tempo(agora):
@@ -2796,7 +3901,8 @@ def _checar_confirmacao_por_tempo(agora):
     if estado.get("status") != "em_teste" or estado.get("para") != VERSAO:
         return
     vivo_ha = agora - _INICIO_PROCESSO
-    sem_como_testar = _CRED_RECUSADAS or credenciais_incompletas() or _ETAPA == "offline"
+    sem_como_testar = (_CRED_RECUSADAS or credenciais_incompletas()
+                       or _ETAPA in ("offline", "fora_horario", "aguardando_login"))
     if vivo_ha > 600 and sem_como_testar:
         confirmar_atualizacao("programa estável há 10 min (sem login/internet para testar o Feegow)")
     elif vivo_ha > 1200 and not sem_como_testar and internet_ok():
@@ -2818,6 +3924,97 @@ def thread_atualizacao():
             _dormir(120)
         else:
             _dormir(carregar_filtros()["atualizacao_intervalo_minutos"] * 60)
+
+
+# ==============================================================================
+# 📡 HEARTBEAT REMOTO (opcional, desligado por padrão) + 🩻 DIAGNÓSTICO
+# ==============================================================================
+CAMPO_TOKEN_HEARTBEAT = "heartbeat_remoto_token_protegido"
+
+
+def _url_heartbeat_permitida(url):
+    """Só HTTPS (ou http em 127.0.0.1/localhost, para teste)."""
+    url = str(url or "").strip().lower()
+    return url.startswith("https://") or url.startswith(("http://127.0.0.1", "http://localhost"))
+
+
+def enviar_heartbeat_remoto(url, token, cfg=None):
+    cfg = cfg or carregar_filtros()
+    status = montar_status()
+    status["maquina"] = cfg.get("nome_maquina") or socket.gethostname()
+    corpo = json.dumps(status, ensure_ascii=False).encode("utf-8")
+    cabecalhos = {"Content-Type": "application/json; charset=utf-8", "User-Agent": f"MonitorFeegow/{VERSAO}"}
+    if token:
+        cabecalhos["Authorization"] = f"Bearer {token}"
+    requisicao = urllib.request.Request(url, data=corpo, headers=cabecalhos, method="POST")
+    with urllib.request.urlopen(requisicao, timeout=10) as resposta:
+        if getattr(resposta, "status", 200) >= 300:
+            raise RuntimeError(f"HTTP {resposta.status}")
+    return True
+
+
+def thread_heartbeat_remoto():
+    """Avisa a VPS de N em N minutos que este monitor está vivo. Só roda com
+    heartbeat_remoto_url preenchida (o servidor alerta no Telegram se parar de chegar)."""
+    _dormir(60)
+    ultimo_aviso_erro, avisou_url = 0.0, ""
+    while not _ENCERRANDO:
+        cfg = carregar_filtros()
+        url = cfg.get("heartbeat_remoto_url") or ""
+        if url and not _url_heartbeat_permitida(url):
+            if avisou_url != url:
+                avisou_url = url
+                log_msg("⚠️ heartbeat_remoto_url precisa ser https:// — heartbeat remoto não enviado.")
+        elif url:
+            try:
+                enviar_heartbeat_remoto(url, ler_segredo(CAMPO_TOKEN_HEARTBEAT), cfg)
+            except Exception as e:
+                if time.time() - ultimo_aviso_erro > 6 * 3600:
+                    ultimo_aviso_erro = time.time()
+                    log_msg(f"📡 Heartbeat remoto falhou ({type(e).__name__}: {str(e)[:120]}). "
+                            "Próximo aviso deste erro só daqui a 6 h.")
+        _dormir(cfg.get("heartbeat_remoto_intervalo_minutos", 5) * 60)
+
+
+def texto_diagnostico():
+    """Texto para colar no suporte: versão, estado, configuração (sem segredos) e
+    as últimas linhas do log — com e-mails mascarados."""
+    import platform
+    cfg = dict(carregar_filtros())
+    cfg.pop("whitelist", None)
+    cfg.pop("blacklist", None)
+    if cfg.get("heartbeat_remoto_url"):
+        cfg["heartbeat_remoto_url"] = re.sub(r"(https?://[^/]+).*", r"\1/...", cfg["heartbeat_remoto_url"])
+    partes = [
+        f"Monitor de Senha Feegow v{VERSAO} — diagnóstico de {datetime.datetime.now():%d/%m/%Y %H:%M:%S}",
+        f"Windows {platform.release()} ({platform.version()}) | Python {sys.version.split()[0]}"
+        f" | {'compilado' if _rodando_compilado() else 'script'} | pasta: {PASTA_SCRIPT}",
+        "",
+        "== Estado",
+        json.dumps(montar_status(), ensure_ascii=False, indent=2),
+        "",
+        "== Configuração (filtros.json, sem listas e sem segredos)",
+        json.dumps(cfg, ensure_ascii=False, indent=2, default=str),
+        f"credenciais: usuário {mascarar_email(_CRED_USUARIO_LOGADO or '(não carregado)')}, "
+        f"senha {'protegida (DPAPI)' if _senha_esta_protegida() else 'NÃO protegida'}",
+    ]
+    for titulo, caminho, quantidade in (("monitor.log", ARQ_LOG, 80),
+                                        ("supervisor.log", os.path.join(PASTA_LOGS, "supervisor.log"), 20)):
+        try:
+            with open(caminho, "r", encoding="utf-8", errors="replace") as arquivo:
+                linhas = arquivo.readlines()[-quantidade:]
+        except OSError:
+            linhas = ["(sem arquivo)\n"]
+        partes += ["", f"== Últimas {quantidade} linhas de {titulo}", "".join(linhas).rstrip()]
+    return mascarar_email("\n".join(partes))
+
+
+def _senha_esta_protegida():
+    try:
+        dados = _ler_json(ARQ_CREDENCIAIS)
+        return bool(dados.get("senha_protegida")) and not dados.get("senha")
+    except Exception:
+        return False
 
 
 def procurar_atualizacao_agora():
@@ -2860,24 +4057,15 @@ def _alternar_janelas():
 
 def on_tray_click(icon, item):
     """pystray roda em OUTRA thread: mexer no Tk direto daqui travava o app."""
-    try:
-        root.after(0, _alternar_janelas)
-    except Exception:
-        pass
+    na_ui(_alternar_janelas)
 
 
 def on_tray_mostrar(icon, item):
-    try:
-        root.after(0, lambda: gerenciar_janelas("mostrar"))
-    except Exception:
-        pass
+    na_ui(gerenciar_janelas, "mostrar")
 
 
 def on_tray_ocultar(icon, item):
-    try:
-        root.after(0, lambda: gerenciar_janelas("ocultar"))
-    except Exception:
-        pass
+    na_ui(gerenciar_janelas, "ocultar")
 
 def encerrar_sistema():
     """Fecha o Chrome, apaga o áudio temporário e sai limpo.
@@ -2924,12 +4112,13 @@ def _limpeza_para_sair():
         _encerrar_instancias_antigas(_pasta_perfil_chrome())
     except Exception:
         pass
-
     try:
-        if os.path.exists(ARQUIVO_OFICIAL_ALERTA):
-            os.remove(ARQUIVO_OFICIAL_ALERTA)
+        _matar_chromedriver_por_pid()
     except Exception:
         pass
+
+    # o cache de áudio (%LOCALAPPDATA%\MonitorFeegow\audio) fica: é o que faz a
+    # voz funcionar sem internet no próximo início.
 
 
 def on_tray_exit(icon, item):
@@ -3018,7 +4207,7 @@ def abrir_configuracoes(aba="senhas"):
     janela = tk.Toplevel(root)
     janela.title("⚙️ Configurações")
     janela.configure(bg="#1e1e1e")
-    janela.geometry("820x600")
+    janela.geometry(_geometria(820, 640))
     janela.attributes("-topmost", True)
     _JANELA_CONFIG = janela
 
@@ -3169,7 +4358,7 @@ def abrir_configuracoes(aba="senhas"):
     rotulo("Senha:", 1)
     entrada_senha = tk.Entry(form, width=45, show="•", bg="#111111", fg="#eeeeee",
                              insertbackground="#eeeeee")
-    entrada_senha.insert(0, str(credenciais.get("senha") or ""))
+    entrada_senha.insert(0, carregar_credenciais().get("senha") or "")
     entrada_senha.grid(row=1, column=1, padx=8, pady=6, sticky="w")
 
     mostrar = tk.BooleanVar(value=False)
@@ -3191,7 +4380,8 @@ def abrir_configuracoes(aba="senhas"):
     tk.Label(aba_login,
              text="auto = tenta o SSO (/main/sso/) e depois a rota antiga (?P=Login)\n"
                   "sso  = só a rota nova   •   legado = só a rota antiga\n\n"
-                  "As alterações de login valem no próximo login (ao reiniciar o script).",
+                  "Ao salvar um login diferente, o navegador é reaberto sozinho com ele.\n"
+                  "A senha fica protegida pelo Windows (DPAPI) — só este usuário deste PC a abre.",
              bg="#1e1e1e", fg="#6b7280", font=("Consolas", 9), justify=tk.LEFT
              ).pack(anchor="w", padx=10, pady=(10, 0))
 
@@ -3293,17 +4483,45 @@ def abrir_configuracoes(aba="senhas"):
         ("watchdog_recarregar_pagina_minutos", "Recarregar a página a cada (min, 0 = nunca):", 30),
         ("watchdog_reiniciar_chrome_horas", "Reabrir o Chrome a cada (h, 0 = nunca):", 0),
         ("watchdog_max_reinicios_por_hora", "Máx. reinícios do Chrome por hora:", 6),
+        ("chrome_reinicio_diario_hora", "Reabrir o Chrome todo dia às (HH:MM, vazio = não):", "03:00"),
+        ("chrome_limite_ram_mb", "Reabrir se o Chrome passar de (MB, 0 = não):", 1500),
+        ("max_relogins_por_hora", "Parar de relogar após N quedas de sessão/hora:", 3),
+        ("heartbeat_remoto_url", "Heartbeat remoto: URL https (vazio = desligado):", ""),
+        ("heartbeat_remoto_intervalo_minutos", "Heartbeat remoto a cada (min):", 5),
+        ("nome_maquina", "Nome desta máquina (heartbeat):", ""),
     )):
         tk.Label(form3, text=rotulo_campo, bg="#1e1e1e", fg="#e5e7eb",
                  font=("Consolas", 10)).grid(row=linha, column=0, sticky="w", pady=4)
-        campo = tk.Entry(form3, width=14, bg="#111111", fg="#eeeeee", insertbackground="#eeeeee")
+        campo = tk.Entry(form3, width=34 if isinstance(padrao_campo, str) else 14,
+                         bg="#111111", fg="#eeeeee", insertbackground="#eeeeee")
         valor = filtros.get(chave)
         campo.insert(0, str(padrao_campo if valor is None else valor))
         campo.grid(row=linha, column=1, padx=8, sticky="w")
         campos_sistema[chave] = (campo, padrao_campo)
 
+    linha_token = len(campos_sistema)
+    tk.Label(form3, text="Heartbeat remoto: token (fica protegido):", bg="#1e1e1e", fg="#e5e7eb",
+             font=("Consolas", 10)).grid(row=linha_token, column=0, sticky="w", pady=4)
+    entrada_token = tk.Entry(form3, width=34, show="•", bg="#111111", fg="#eeeeee", insertbackground="#eeeeee")
+    entrada_token.insert(0, ler_segredo(CAMPO_TOKEN_HEARTBEAT))
+    entrada_token.grid(row=linha_token, column=1, padx=8, sticky="w")
+
+    def copiar_diagnostico():
+        try:
+            texto = texto_diagnostico()
+            janela.clipboard_clear()
+            janela.clipboard_append(texto)
+            janela.update()
+            messagebox.showinfo("Diagnóstico copiado",
+                                "O diagnóstico (sem senha, e-mails mascarados) foi copiado.\n"
+                                "Cole (Ctrl+V) na conversa com o suporte.", parent=janela)
+        except Exception as e:
+            messagebox.showerror("Diagnóstico", str(e), parent=janela)
+
     linha_botoes = tk.Frame(aba_sistema, bg="#1e1e1e")
     linha_botoes.pack(anchor="w", padx=14, pady=12)
+    tk.Button(linha_botoes, text="📋 Copiar diagnóstico", command=copiar_diagnostico,
+              bg="#374151", fg="white", relief=tk.FLAT, padx=10, pady=4).pack(side=tk.RIGHT, padx=(8, 0))
     tk.Button(linha_botoes, text="⬆️ Procurar atualização agora", command=procurar_atualizacao_agora,
               bg="#1f3a5f", fg="white", relief=tk.FLAT, padx=10, pady=4).pack(side=tk.LEFT)
     tk.Button(linha_botoes, text="📂 Abrir pasta de logs",
@@ -3343,20 +4561,40 @@ def abrir_configuracoes(aba="senhas"):
             for chave, (campo, padrao_campo) in campos_sistema.items():
                 if isinstance(padrao_campo, int):
                     dados[chave] = _para_int(campo.get(), padrao_campo, 0)
+                elif chave == "chrome_reinicio_diario_hora":
+                    dados[chave] = _hora_valida(campo.get())   # vazio = desligado
+                elif chave in ("heartbeat_remoto_url", "nome_maquina"):
+                    dados[chave] = campo.get().strip()
                 else:
                     dados[chave] = campo.get().strip() or padrao_campo
+            if entrada_token.get() != ler_segredo(CAMPO_TOKEN_HEARTBEAT):
+                gravar_segredo(CAMPO_TOKEN_HEARTBEAT, entrada_token.get().strip())
             _sincronizar_termos_filtro(dados)
             _gravar_json(ARQ_FILTROS, dados)
 
-            cred = ler_json(ARQ_CREDENCIAIS)
-            cred["usuario"] = entrada_usuario.get().strip()
-            cred["senha"] = entrada_senha.get()
-            cred["rota_login"] = (combo_rota.get() or "auto").lower()
-            _gravar_json(ARQ_CREDENCIAIS, cred)
+            antes = carregar_credenciais()
+            novo_usuario = entrada_usuario.get().strip()
+            nova_senha = entrada_senha.get()
+            nova_rota = (combo_rota.get() or "auto").lower()
+            login_mudou = (novo_usuario != antes.get("usuario") or nova_senha != antes.get("senha")
+                           or nova_rota != antes.get("rota_login"))
+            salvar_credenciais(novo_usuario, nova_senha, nova_rota)
 
             carregar_filtros(forcar=True)
-            global _CRED_USUARIO_LOGADO
+            global _CRED_USUARIO_LOGADO, _CRED_RECUSADAS, _RELOGIN_BLOQUEADO_ATE
+            global _PEDIDO_REINICIO_CHROME, _HORA_PEDIDO_CHROME, _REINICIO_SEM_ESPERA
             _CRED_USUARIO_LOGADO = None  # força relogar com as credenciais novas
+            reabriu = False
+            if login_mudou:
+                _CRED_RECUSADAS = False
+                _RELOGIN_BLOQUEADO_ATE = 0.0
+                _RELOGINS.clear()
+                if _SELENIUM_RODANDO and not credenciais_incompletas():
+                    log_msg("🔐 Login alterado na configuração — reabrindo o navegador com o login novo.")
+                    _REINICIO_SEM_ESPERA = True
+                    _HORA_PEDIDO_CHROME = time.time()
+                    _PEDIDO_REINICIO_CHROME = "login alterado na configuração"
+                    reabriu = True
 
             log_msg(
                 f"⚙️ Configurações salvas: {len(dados['whitelist'])} alertar / "
@@ -3371,13 +4609,16 @@ def abrir_configuracoes(aba="senhas"):
                 threading.Thread(target=iniciar_selenium, daemon=True).start()
                 iniciou_agora = True
 
+            if iniciou_agora:
+                aviso_login = "O monitoramento foi iniciado com o login novo."
+            elif reabriu:
+                aviso_login = "O navegador está sendo reaberto com o login novo."
+            else:
+                aviso_login = "O login não mudou."
             messagebox.showinfo(
                 "Configurações salvas",
                 "filtros.json e credenciais.json atualizados.\n\n"
-                "As senhas e os alertas valem na hora.\n"
-                + ("O monitoramento foi iniciado com o login novo."
-                   if iniciou_agora else
-                   "O login novo é usado no próximo login (ao reiniciar o script)."),
+                "As senhas e os alertas valem na hora.\n" + aviso_login,
                 parent=janela,
             )
         except Exception as e:
@@ -3395,9 +4636,36 @@ def abrir_configuracoes(aba="senhas"):
 # ==============================================================================
 # INTERFACE GRÁFICA (TKINTER) E INICIALIZAÇÃO
 # ==============================================================================
+def _ativar_dpi():
+    """Sem isto o Windows "estica" a janela em telas com 125/150% (texto borrado)."""
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)   # system-aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+_ativar_dpi()
 root = tk.Tk()
+try:
+    _ESCALA = max(1.0, min(3.0, float(root.winfo_fpixels("1i")) / 96.0))
+except Exception:
+    _ESCALA = 1.0
+
+
+def _geometria(largura, altura):
+    """Tamanho escalado pelo DPI e limitado à tela."""
+    l = min(int(largura * _ESCALA), int(root.winfo_screenwidth() * 0.95))
+    a = min(int(altura * _ESCALA), int(root.winfo_screenheight() * 0.9))
+    return f"{l}x{a}"
+
+
 root.title(f"Painel de Depuração - Monitor Feegow v{VERSAO}")
-root.geometry("800x650")
+root.geometry(_geometria(800, 650))
 root.configure(bg="#1e1e1e")
 root.withdraw()
 root.protocol("WM_DELETE_WINDOW", ao_fechar_janela)
@@ -3418,6 +4686,8 @@ rotulo_status.pack(side=tk.LEFT, padx=14)
 
 
 def _atualizar_rotulo_status():
+    global _TK_TICK
+    _TK_TICK = time.time()
     try:
         nivel, texto = _texto_status()
         rotulo_status.configure(text=texto, fg=CORES_STATUS.get(nivel, "#9ca3af"))
@@ -3435,7 +4705,8 @@ janela_logs.pack(fill=tk.BOTH, expand=True)
 frame_estudio = tk.LabelFrame(root, text="Estúdio de Voz", bg="#1e1e1e", fg="yellow", font=("Consolas", 10))
 frame_estudio.pack(fill=tk.X, padx=10, pady=5)
 entry_voz = tk.Entry(frame_estudio, font=("Consolas", 12), width=60)
-entry_voz.insert(0, "Atenção! Senha de dilatação.")
+_FRASES_INICIAIS = _frases_para_pregerar()
+entry_voz.insert(0, _FRASES_INICIAIS[1] if len(_FRASES_INICIAIS) > 1 else _FRASES_INICIAIS[0])
 entry_voz.pack(side=tk.LEFT, padx=10, pady=10, expand=True, fill=tk.X)
 tk.Button(frame_estudio, text="Testar Texto", bg="#ff9900", fg="black", font=("Consolas", 10, "bold"), command=lambda: threading.Thread(target=gerar_e_tocar_alerta_teste, args=(entry_voz.get(), "configurado"), daemon=True).start()).pack(side=tk.RIGHT, padx=10)
 
@@ -3453,7 +4724,7 @@ if __name__ == "__main__":
             f"{', supervisionado' if _supervisionado() else ''}).")
     carregar_filtros(forcar=True)
     carregar_credenciais()
-    preparar_audio_inicial()
+    pregerar_audios_em_segundo_plano()   # fora da thread principal (não trava a abertura)
 
     if credenciais_incompletas():
         log_msg("🔐 credenciais.json sem login/senha válidos — aguardando preenchimento na janela de configuração.")
@@ -3464,7 +4735,9 @@ if __name__ == "__main__":
     threading.Thread(target=iniciar_tray, daemon=True).start()
     threading.Thread(target=thread_watchdog, name="watchdog", daemon=True).start()
     threading.Thread(target=thread_atualizacao, name="atualizacao", daemon=True).start()
+    threading.Thread(target=thread_heartbeat_remoto, name="heartbeat_remoto", daemon=True).start()
     root.after(300, _drenar_fila_log)
+    root.after(100, _drenar_fila_ui)
     root.after(1000, _atualizar_rotulo_status)
 
     try:
