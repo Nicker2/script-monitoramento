@@ -27,3 +27,17 @@ filtros.backup.json
 *.anterior
 *.novo
 *.falhou
+
+# Chave PRIVADA de assinatura das versões: NUNCA no repositório (fica em ../chaves/)
+*.pem
+chaves/
+*.key
+
+# temporários da gravação atômica / áudio
+*.tmp
+*.tmp.wav
+.pytest_cache/
+
+# sandbox dos testes com Chrome (tests/harness)
+tests/harness/sandbox/
+tests/harness/sandbox_localappdata/
