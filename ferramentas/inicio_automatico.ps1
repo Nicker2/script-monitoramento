@@ -32,15 +32,28 @@ if ($Acao -eq "remover") {
 }
 
 if (Test-Path $pyw) {
+    $prefixo = ""
     if (-not $Python) {
+        # Sem caminho fixo: WinPython na pasta do monitor (ou 1-2 niveis acima),
+        # pythonw.exe do PATH e, por ultimo, o "pyw" launcher (pyw.exe -3).
+        $bases = @($pasta, (Split-Path -Parent $pasta), (Split-Path -Parent (Split-Path -Parent $pasta))) |
+            Where-Object { $_ }
+        $winpython = foreach ($b in $bases) {
+            Get-ChildItem -Path (Join-Path $b "Winpython*\WPy64-*\python-*\pythonw.exe") -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName
+        }
         $candidatos = @(
-            (Get-Command pythonw.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source),
-            "D:\Meus Documentos\Documentos\Nova pasta\Winpython64-3.12.4.1\WPy64-31241\python-3.12.4.amd64\pythonw.exe"
+            ($winpython | Select-Object -First 1),
+            (Get-Command pythonw.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
         ) | Where-Object { $_ -and (Test-Path $_) }
         $Python = $candidatos | Select-Object -First 1
+        if (-not $Python) {
+            $Python = Get-Command pyw.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+            if ($Python) { $prefixo = "-3 " }
+        }
     }
     if (-not $Python) { Write-Host "pythonw.exe nao encontrado. Rode de novo com -Python <caminho do pythonw.exe>."; exit 1 }
-    $alvo = $Python; $argumentos = "`"$pyw`""
+    $alvo = $Python; $argumentos = "$prefixo`"$pyw`""
 } elseif (Test-Path $exe) {
     $alvo = $exe; $argumentos = ""
 } else {

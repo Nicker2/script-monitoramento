@@ -22,7 +22,16 @@ if errorlevel 1 (
     python -m pip install --upgrade nuitka
 )
 
-echo [2/3] Compilando... (a primeira vez baixa o compilador MinGW)
+rem Versao: fonte unica = VERSAO no SCRIPT_EXPLICA.py
+set "VERSAO_EXE="
+for /f "usebackq delims=" %%v in (`python ferramentas\versao_atual.py --nuitka`) do set "VERSAO_EXE=%%v"
+if not defined VERSAO_EXE (
+    echo [ERRO] Nao consegui ler a VERSAO do SCRIPT_EXPLICA.py.
+    pause
+    exit /b 1
+)
+
+echo [2/3] Compilando a versao %VERSAO_EXE%... (a primeira vez baixa o compilador MinGW)
 echo       Isso leva de 5 a 20 minutos. Pode deixar rodando.
 echo.
 python -m nuitka ^
@@ -39,7 +48,7 @@ python -m nuitka ^
   --nofollow-import-to=pygame.tests ^
   --company-name="Monitor Feegow" ^
   --product-name="Monitor de Senha Feegow" ^
-  --file-version=2.0.0.0 --product-version=2.0.0.0 ^
+  --file-version=%VERSAO_EXE% --product-version=%VERSAO_EXE% ^
   --output-filename="MonitorFeegow.exe" ^
   --output-dir=dist ^
   SCRIPT_EXPLICA.py
