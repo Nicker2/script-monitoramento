@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><title>Lista de Espera (simulada)</title>
+<style>
+ body{font-family:Segoe UI,Arial,sans-serif;margin:20px;background:#f4f6f8}
+ #modal{display:none;position:fixed;top:60px;left:30%;background:#fff;border:1px solid #888;padding:16px;min-width:320px}
+ #modal button{display:block;margin:6px 0;width:100%}
+ .painel{margin-top:30px;padding:10px;background:#fff;border:1px dashed #999}
+</style></head>
+<body>
+<h2>Lista de Espera — página SIMULADA para testar o watchdog (sem dados reais)</h2>
+<p>Pacientes aguardando: Paciente Teste A, Paciente Teste B.</p>
+<button class="btn btn-xs btn-default callTicketBtn" onclick="abrirModal()">Chamar senha</button>
+<div id="modal">
+  <b>Senhas na fila</b>
+  <div id="tickets"></div>
+  <button onclick="fecharModal()">Fechar</button>
+</div>
+<div class="painel">
+  <b>Simular falha:</b>
+  <button onclick="simular('normal')">normal</button>
+  <button onclick="simular('login')">cair no login</button>
+  <button onclick="simular('branca')">tela branca</button>
+  <button onclick="simular('sem_botao')">sumir botão</button>
+  <button onclick="simular('travar')">travar a página</button>
+</div>
+<script>
+ var TICKETS = (new URLSearchParams(location.search).get('tickets') || 'AGENDAMENTOS|DILATAÇÃO - CCC').split('|');
+ function abrirModal(){
+   var c=document.getElementById('tickets'); c.innerHTML='';
+   TICKETS.forEach(function(t){ var b=document.createElement('button'); b.textContent=t; c.appendChild(b); });
+   document.getElementById('modal').style.display='block';
+ }
+ function fecharModal(){ document.getElementById('modal').style.display='none'; }
+ document.addEventListener('keydown', function(e){ if(e.key==='Escape') fecharModal(); });
+ function simular(tipo){
+   if(tipo==='login'){ location.href = location.href.replace(/ListaEspera_simulada\.html.*/, 'login_simulado.html?P=Login'); }
+   else if(tipo==='branca'){ document.body.innerHTML=''; }
+   else if(tipo==='sem_botao'){ var b=document.querySelector('.callTicketBtn'); if(b) b.remove(); }
+   else if(tipo==='travar'){ setTimeout(function(){ while(true){} }, 50); }
+ }
+</script>
+</body></html>
