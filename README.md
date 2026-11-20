@@ -479,6 +479,14 @@ Regras de segurança:
 
 ## Histórico de Alterações
 
+### v2.0.1 — correção urgente do reinício
+
+- **Corrigido:** o reinício do programa (watchdog N3, reinício depois de atualizar e rollback) **fechava o monitor de vez**. A limpeza antes de reiniciar terminava com `os._exit(0)`, então o processo saía com código 0 antes de relançar e o `iniciar_monitor.pyw` entendia "o usuário encerrou" e parava também. Agora a limpeza só limpa; o reinício sai com o código 75 (o supervisor relança) e só o **Encerrar Sistema** sai com 0.
+- **Atenção (máquinas na 2.0.0):** a própria 2.0.0 ainda tem o defeito ao se atualizar: depois de instalar a versão nova ela fecha e **não volta sozinha**. Abra o monitor uma vez (duplo clique em `iniciar_monitor.pyw`, ou saia e entre no Windows). Da 2.0.1 em diante o reinício volta sozinho.
+- Bandeja → **Reiniciar monitor**; e pedidos por arquivo: criar `logs/reiniciar.pedido` reinicia, `logs/encerrar.pedido` encerra (lidos a cada 15 s).
+- `hosts_verificacao_internet` no `filtros.json` (padrão `["app.feegow.com", "www.google.com"]`, aceita `host:porta`).
+- Testes: o teste de atualização não troca mais o `reiniciar_processo` por um mock (era isso que escondia o defeito) e há um teste de integração real (supervisor + monitor + Chrome contra um Feegow simulado local).
+
 ### v2.0.0 — watchdog, atualização automática e inicialização simples
 
 - **Watchdog** com batimento e recuperação em 3 níveis (recarregar/relogar → reabrir o Chrome → reiniciar o programa), com backoff e limites por hora; trata sessão caída, tela branca, página travada, internet fora e PC suspenso.

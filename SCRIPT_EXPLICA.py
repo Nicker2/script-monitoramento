@@ -55,7 +55,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.0.0"
+VERSAO = "2.0.1"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -461,6 +461,8 @@ FILTROS_PADRAO = {
     "auto_atualizar": True,
     "atualizacao_intervalo_minutos": 60,
     "atualizacao_canal": "main",
+    # hosts usados para saber se há internet ("host" ou "host:porta", porta padrão 443)
+    "hosts_verificacao_internet": ["app.feegow.com", "www.google.com"],
 }
 
 # Padrões prontos de filtro (botões na janela de configuração)
@@ -694,6 +696,10 @@ def carregar_filtros(forcar=False):
             "atualizacao_intervalo_minutos": _para_int(
                 combinado.get("atualizacao_intervalo_minutos"), 60, 10),
             "atualizacao_canal": str(combinado.get("atualizacao_canal") or CANAL_ATUALIZACAO_PADRAO).strip(),
+            "hosts_verificacao_internet": [
+                str(h).strip() for h in (combinado.get("hosts_verificacao_internet")
+                                         or FILTROS_PADRAO["hosts_verificacao_internet"])
+                if str(h).strip()] or list(FILTROS_PADRAO["hosts_verificacao_internet"]),
         }
         _FILTROS_MTIME = mtime
         log_msg(
@@ -2389,11 +2395,16 @@ def _dormir(segundos, progresso=False):
 
 
 def internet_ok(timeout=5):
-    for host in ("app.feegow.com", "www.google.com"):
+    try:
+        hosts = carregar_filtros().get("hosts_verificacao_internet") or []
+    except Exception:
+        hosts = []
+    for entrada in (hosts or FILTROS_PADRAO["hosts_verificacao_internet"]):
+        host, _sep, porta = str(entrada).strip().rpartition(":") if ":" in str(entrada) else (str(entrada).strip(), "", "443")
         try:
-            socket.create_connection((host, 443), timeout=timeout).close()
+            socket.create_connection((host, int(porta or 443)), timeout=timeout).close()
             return True
-        except OSError:
+        except (OSError, ValueError):
             continue
     return False
 
@@ -2469,9 +2480,35 @@ def reiniciar_processo(motivo, ignorar_limite=False):
         return False
     log_msg(f"🔁 [N3] Reiniciando o programa inteiro. Motivo: {motivo}")
     _ENCERRANDO = True
+    # Antes (2.0.0) _limpeza_para_sair() terminava com os._exit(0): o processo
+    # morria com código 0 ANTES de relançar e o supervisor entendia "usuário
+    # encerrou" e saía também. Agora a limpeza só limpa; quem sai é o
+    # relancar_processo_agora() (código 75 sob o supervisor).
     _limpeza_para_sair()
     relancar_processo_agora()
     return True
+
+
+ARQ_PEDIDO_REINICIO = os.path.join(PASTA_LOGS, "reiniciar.pedido")
+ARQ_PEDIDO_ENCERRAR = os.path.join(PASTA_LOGS, "encerrar.pedido")
+
+
+def _checar_pedidos_externos():
+    """Arquivos de pedido em logs/: reiniciar.pedido (reinicia o programa) e
+    encerrar.pedido (encerra). Útil para manutenção remota/atalho .bat."""
+    for caminho, acao in ((ARQ_PEDIDO_ENCERRAR, "encerrar"), (ARQ_PEDIDO_REINICIO, "reiniciar")):
+        if not os.path.isfile(caminho):
+            continue
+        try:
+            os.remove(caminho)
+        except Exception:
+            continue
+        if acao == "encerrar":
+            log_msg("🛑 Pedido externo de encerramento (logs/encerrar.pedido).")
+            encerrar_sistema()
+        else:
+            reiniciar_processo("pedido externo (logs/reiniciar.pedido)", ignorar_limite=True)
+        return
 
 
 def thread_watchdog():
@@ -2481,6 +2518,10 @@ def thread_watchdog():
     while not _ENCERRANDO:
         time.sleep(WATCHDOG_PERIODO_SEGUNDOS)
         agora = time.time()
+        try:
+            _checar_pedidos_externos()
+        except Exception as e:
+            log_msg(f"⚠️ Watchdog: falha ao tratar pedido externo ({type(e).__name__}: {e})")
         try:
             # PC suspenso/hibernado: o relógio "pula". Dá uma folga e recarrega a página.
             if agora - ultimo_giro > max(90, WATCHDOG_PERIODO_SEGUNDOS * 6):
@@ -2848,11 +2889,15 @@ def encerrar_sistema():
     _ENCERRANDO = True
     _limpeza_para_sair()
     _liberar_instancia_unica()
-    os._exit(0)
+    os._exit(0)   # código 0 = "o usuário encerrou": o supervisor para de relançar
 
 
 def _limpeza_para_sair():
-    """Fecha bandeja e Chrome e deixa o perfil limpo (usado ao sair e ao reiniciar)."""
+    """Fecha bandeja e Chrome e deixa o perfil limpo (usado ao sair e ao reiniciar).
+
+    NÃO encerra o processo: quem sai é encerrar_sistema() (código 0) ou
+    relancar_processo_agora() (código 75, reinício).
+    """
     try:
         if tray_icon is not None:
             tray_icon.stop()
@@ -2886,8 +2931,6 @@ def _limpeza_para_sair():
     except Exception:
         pass
 
-    os._exit(0)
-
 
 def on_tray_exit(icon, item):
     log_msg("Desligando sistema. Limpando memória e rastros...")
@@ -2900,6 +2943,9 @@ def iniciar_tray():
         item('Mostrar Painel', on_tray_mostrar),
         item('Ocultar Painel', on_tray_ocultar),
         item('Procurar atualização', lambda icon, it: procurar_atualizacao_agora()),
+        item('Reiniciar monitor', lambda icon, it: threading.Thread(
+            target=reiniciar_processo, args=("pedido do usuário (bandeja)",),
+            kwargs={"ignorar_limite": True}, daemon=True).start()),
         pystray.Menu.SEPARATOR,
         item('Encerrar Sistema', on_tray_exit),
     )
