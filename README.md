@@ -14,8 +14,22 @@ As regras de filtro e as credenciais ficam em arquivos **JSON separados** (`filt
 >
 > Todas as versões: <https://github.com/Nicker2/script-monitoramento/releases>
 
+## Como executar
+
+| Situação | O que fazer |
+| :--- | :--- |
+| Dia a dia (com Python) | Duplo clique em **`iniciar_monitor.pyw`**. Não abre janela: o ícone aparece na bandeja. |
+| Dia a dia (sem Python) | Duplo clique no **`MonitorFeegow.exe`**. |
+| Ligar junto com o Windows | Duplo clique em **`instalar_inicio_automatico.bat`** (cria um atalho em `shell:startup`). Para desfazer: `remover_inicio_automatico.bat`. |
+| Ver os erros na tela | `DEBUG_EXECUTAR_EXPLICA.BAT` (ou `python iniciar_monitor.pyw --console`). |
+
+O `iniciar_monitor.pyw` é o **único** ponto de entrada: abre o monitor, relança se ele cair, aplica o reinício pedido pelo watchdog/atualização, grava `logs/supervisor.log` e não deixa abrir duas vezes. Os arquivos antigos (`executar_iniciar_explica.BAT`, `iniciar_explica.py`, `executar_invisivel_explica.py`) continuam aí só para não quebrar atalhos antigos — todos apontam para o `iniciar_monitor.pyw`.
+
+---
+
 ## Índice
 
+- [Como executar](#como-executar)
 - [Descrição](#descrição)
 - [Como Funciona](#como-funciona)
 - [Arquivos e Descrições](#arquivos-e-descricoes)
@@ -23,6 +37,9 @@ As regras de filtro e as credenciais ficam em arquivos **JSON separados** (`filt
 - [Pré-requisitos](#pré-requisitos)
 - [Instalação](#instalação)
 - [Uso](#uso)
+- [Watchdog (auto-recuperação)](#watchdog-auto-recuperação)
+- [Atualização automática](#atualização-automática)
+- [Áudio: só a saída padrão](#áudio-só-a-saída-padrão)
 - [Compilando um .exe (Nuitka)](#compilando-um-exe-nuitka)
 - [Solução de Problemas](#solução-de-problemas)
 - [Limpeza de Disco](#limpeza-de-disco-pcs-antigos)
@@ -108,149 +125,39 @@ Auditor e limpador do lixo que o Chrome/ChromeDriver deixam no PC. Roda só rela
 
 ---
 
-### **iniciar_explica.py**
-**Descrição**:  
-Este script é responsável por iniciar o processo de execução do script Python invisível. Ele verifica se o executável do Python e o script invisível existem nos caminhos definidos. Caso ambos sejam encontrados, ele executa o script `executar_invisivel_explica.py` de maneira oculta, sem abrir a janela do terminal. Isso é feito utilizando a função `subprocess.Popen`, com o argumento `CREATE_NO_WINDOW`, que impede que a janela do terminal seja exibida.
+### **iniciar_monitor.pyw** (ponto de entrada)
+**Descrição**:
+Supervisor sem janela. Abre o `SCRIPT_EXPLICA.py` (ou o `MonitorFeegow.exe`), relança na hora quando o monitor sai com o código 75 (reinício pedido pelo watchdog ou pela atualização), relança com espera crescente (5 s → 5 min) se ele cair e para quando o usuário escolhe **Encerrar Sistema**. Log em `logs/supervisor.log`.
 
 ---
 
-### **executar_invisivel_explica.py**
-**Descrição**:  
-Este script faz parte do processo de execução invisível do código. Ele verifica se os caminhos para o executável do Python e o script Python principal (`SCRIPT_EXPLICA.py`) estão corretos e existem. Caso tudo esteja certo, o script executa `SCRIPT_EXPLICA.py` de forma oculta, utilizando a função `subprocess.Popen` com a flag `CREATE_NO_WINDOW`. Se ocorrer algum erro durante a execução do script, ele é registrado no arquivo de log `error_log.txt`, e o script é reiniciado a cada 5 segundos. Esse processo garante que o script principal seja reiniciado automaticamente em caso de falha.
+### **instalar_inicio_automatico.bat** / **remover_inicio_automatico.bat**
+**Descrição**:
+Criam/removem o atalho "Monitor de Senha Feegow" na pasta Inicializar do usuário (sem precisar de administrador). O trabalho é feito por `ferramentas/inicio_automatico.ps1`, que também avisa se ainda existe um atalho antigo (para não abrir duas vezes). Se o `pythonw.exe` não estiver no PATH: `instalar_inicio_automatico.bat -Python "C:\caminho\pythonw.exe"`.
 
 ---
 
-### **executar_iniciar_explica.BAT**
-**Descrição**:  
-Este é um arquivo de script batch responsável por iniciar o processo de execução do Python, rodando o script `iniciar_explica.py`. Ele invoca o Python de maneira silenciosa (`start /b`) e, caso ocorra algum erro na execução do script, o erro é verificado e, se necessário, o script é reiniciado automaticamente, aguardando 3 segundos antes de reiniciar o processo.
+### **versao.json** e **ferramentas/gerar_versao.py**
+**Descrição**:
+`versao.json` diz qual é a versão publicada (com o sha256 do script e, opcionalmente, do `.exe`). As máquinas consultam esse arquivo para se atualizar. O `gerar_versao.py` monta o arquivo a partir do `VERSAO` do script — ver [Atualização automática](#atualização-automática).
 
 ---
 
-### **error_log.txt**
-**Descrição**:  
-Este arquivo de log é utilizado para armazenar os erros que ocorrem durante a execução do script invisível. Caso haja algum erro ao tentar rodar o script, o traceback do erro é registrado neste arquivo para facilitar o diagnóstico e a resolução de problemas. Isso ajuda a monitorar e depurar o funcionamento dos scripts sem precisar observar a execução diretamente.
+### **logs/**
+**Descrição**:
+`monitor.log` (tudo o que aparece no painel, com data e hora; 5 arquivos de 1 MB em rotação), `supervisor.log` e `watchdog_estado.json`. Não vai para o git.
+
+---
+
+### **Legado: executar_iniciar_explica.BAT, iniciar_explica.py, executar_invisivel_explica.py**
+**Descrição**:
+Antes a cadeia era `executar_iniciar_explica.BAT` → `iniciar_explica.py` → `executar_invisivel_explica.py` (laço que relançava em 5 s) → `SCRIPT_EXPLICA.py`, com caminhos fixos do WinPython em `D:\`. Agora os três só chamam o `iniciar_monitor.pyw`, para os atalhos antigos continuarem funcionando. Podem ser apagados depois que as máquinas usarem o atalho novo.
 
 ---
 
 ### **DEBUG_EXECUTAR_EXPLICA.BAT**
-**Descrição**:  
-Este arquivo batch é semelhante ao `executar_iniciar_explica.BAT`, mas é utilizado para fins de depuração. Ele também executa o script `SCRIPT_EXPLICA.py` de maneira silenciosa e reinicia o processo em caso de erro, mas com uma função extra de depuração, como exibir mensagens de erro diretamente no console.
-
----
-
-## Arquivos de Configuração
-
-As regras de filtro e as credenciais ficam **fora do código**, em arquivos JSON. Se eles não existirem, o script **cria automaticamente** na primeira execução (com os valores padrão) — é só abrir e editar.
-
-### **filtros.json**
-Controla o que dispara o alarme. É recarregado **sozinho** ao salvar o arquivo, sem reiniciar o programa.
-
-```json
-{
-  "termos_gatilho": ["DILATAÇÃO", "MC", "AUTO REFRATOR", "CONSULTA", "..."],
-  "comparacao": "contem",
-  "padrao_sem_match": "ignorar",
-  "whitelist": ["DILATAÇÃO - CCC", "DILATAÇÃO - MMM", "..."],
-  "blacklist": ["CONSULTA - COMUM", "EXAME - COMUM", "MC", "..."],
-  "pausa_minutos": 15,
-  "intervalo_busca_segundos": 10,
-  "alerta_tela": false,
-  "alerta_voz": true
-}
-```
-
-| Campo | O que faz |
-| :--- | :--- |
-| `termos_gatilho` | Textos usados no **XPath de busca do botão** da senha (`//button[contains(...)]`). Escreva como aparece na tela, **com acento**: `DILATAÇÃO` não acha `DILATACAO`. Basta um dos termos casar para o botão ser localizado. |
-| `comparacao` | `contem` (padrão) ou `exata` — como as listas casam com o texto da senha. |
-| `whitelist` | Senhas que **DEVEM alertar**. Tem prioridade: vence a blacklist. |
-| `blacklist` | Senhas que devem ser **IGNORADAS**. |
-| `padrao_sem_match` | `ignorar` (padrão) ou `alertar` — o que fazer quando a senha não está em nenhuma das listas. |
-| `pausa_minutos` | Quanto tempo o botão "CIENTE" silencia os alertas (padrão 15). |
-| `intervalo_busca_segundos` | Espera entre uma verificação e outra na lista de espera (padrão 10). |
-| `alerta_tela` | `true`/`false` — liga ou desliga a **janela vermelha piscando** na tela (padrão `true`). |
-| `alerta_voz` | `true`/`false` — liga ou desliga a **fala sintetizada** (padrão `true`). |
-| `alarme_max_segundos` | Tempo máximo que o alarme toca antes de se desarmar sozinho (padrão `120`; `0` = sem limite). |
-| `intervalo_repeticao_segundos` | Espera entre uma repetição da voz e outra (padrão `15`). |
-| `volume_alarme` | Volume da voz, de `0` a `100` (padrão `100`). |
-
-**Configuração atual da clínica:**
-
-| ALERTAR (whitelist) | IGNORAR (blacklist) |
-| :--- | :--- |
-| DILATAÇÃO - CCC | CONSULTA - COMUM |
-| DILATAÇÃO - MMM | EXAME - COMUM |
-| DILATAÇÃO - FENIL | PRIORITÁRIA |
-| DILATAÇÃO - CMC | AGENDAMENTOS |
-| DILATAÇÃO - CMM | CIRURGIA |
-| DILATAÇÃO COM PILOCARPINA | RETORNO |
-| AUTO REFRATOR (SEM DILATAR) | LENTES DE CONTATO |
-| | R2 |
-| | MC |
-| | RECEPÇÃO 1° ANDAR |
-| | RECEPÇÃO 2° ANDAR |
-| | RECEPÇÃO SUS |
-| | OUTRAS ESPECIALIDADES |
-
-> A comparação ignora **acentos, maiúsculas/minúsculas, hífens e pontuação**: `DILATAÇÃO-CCC`, `dilatacao ccc` e `DILATAÇÃO - CCC` caem todas na mesma regra. `RECEPÇÃO 1º ANDAR` também casa com `RECEPÇÃO 1° ANDAR`. Chaves começando com `_` (ex.: `_comentario`) são ignoradas.
-
-**Modos de alerta (as duas chaves do fim):**
-
-| Quero... | `alerta_tela` | `alerta_voz` |
-| :--- | :--- | :--- |
-| Fala + janela piscando (padrão) | `true` | `true` |
-| **Só voz, sem nada na tela** | `false` | `true` |
-| Só a janela, sem som | `true` | `false` |
-| Nenhum (só registra no log) | `false` | `false` |
-
-`true`/`false`, `1`/`0`, `"sim"`/`"não"` e `"on"`/`"off"` são todos aceitos.
-
-**Ordem de decisão do filtro:** `whitelist` (alerta) > `blacklist` (ignora) > `padrao_sem_match`. A whitelist existe justamente para o caso em que a senha contém uma palavra da blacklist mas deve alertar de qualquer forma — é o caso de `DILATAÇÃO - CMC`, que contém `MC`.
-
-### Exemplos prontos (pasta `exemplos/`)
-
-Quatro `filtros.json` prontos para copiar. Para usar: copie o arquivo desejado **sobre** o `filtros.json` da pasta do script (ou copie o conteúdo) e reinicie.
-
-| Arquivo | O que alerta |
-| :--- | :--- |
-| `exemplos/filtros.dilatacao.json` | As senhas de dilatação (`DILATAÇÃO - CCC/MMM/FENIL/CMC/CMM`, `DILATAÇÃO COM PILOCARPINA`, `AUTO REFRATOR (SEM DILATAR)`) e ignora o resto. É idêntico ao `filtros.json` do repositório. |
-| `exemplos/filtros.lentes-de-contato.json` | **Só** `LENTES DE CONTATO`. |
-| `exemplos/filtros.mc.json` | **Só** `MC`. Usa `comparacao: "exata"` de propósito, para `DILATAÇÃO - CMC` não disparar junto. |
-| `exemplos/filtros.r2.json` | **Só** `R2`. |
-
-> Nos três exemplos de senha única a `blacklist` está vazia e `padrao_sem_match` é `ignorar`: qualquer senha diferente daquela é silenciosa.
-
-### **credenciais.json**
-Usuário e senha do Feegow. **Não é versionado** (está no `.gitignore`) — o script cria na primeira execução a partir de `credenciais.exemplo.json` e avisa no log até você preencher.
-
-```json
-{
-  "usuario": "seu.usuario@clinica.com.br",
-  "senha": "sua-senha",
-  "rota_login": "auto",
-  "url_login": "https://app.feegow.com/main/?P=Login",
-  "url_login_sso": "https://app.feegow.com/main/sso/",
-  "url_lista_espera": "https://app.feegow.com/pre-v8/?P=ListaEspera&Pers=1"
-}
-```
-
-| Campo | O que faz |
-| :--- | :--- |
-| `usuario` | E-mail de acesso ao Feegow. |
-| `senha` | Senha do Feegow. |
-| `rota_login` | `auto` (padrão: tenta o SSO e depois a antiga), `sso` (só a nova) ou `legado` (só a antiga). |
-| `url_login` | Página de login antiga (`?P=Login`). |
-| `url_login_sso` | Página de login nova (`/main/sso/`). |
-| `url_lista_espera` | Página da lista de espera monitorada. |
-
-**As duas rotas de login:**
-
-- **SSO (`/main/sso/`)** — duas etapas (e-mail → senha). Quando outra máquina está logada, o Feegow pede confirmação e **derruba a outra máquina**: o script confirma sozinho e avisa no log.
-- **Legada (`?P=Login`)** — formulário único. Se aparecer "usuário já conectado em outra máquina", o script usa o bypass (repete o POST até assumir a sessão).
-- Com `rota_login: "auto"`, se uma rota falhar ele tenta a outra automaticamente.
-- E-mail/senha errados são detectados pelas mensagens "E-mail ou senha incorretos" (SSO) e "E-mail de acesso ou senha não conferem" (legada) — nesses casos o script **para** em vez de ficar tentando e travar a conta.
-
-> ⚠️ Nunca faça commit do `credenciais.json` com a senha real. O repositório é público.
+**Descrição**:
+Roda o `SCRIPT_EXPLICA.py` com console visível e `pause` no fim, para ver as mensagens e erros na tela.
 
 ---
 
@@ -268,7 +175,7 @@ Bibliotecas Python (todas no `requirements.txt`):
 - `selenium` — automação do navegador
 - `webdriver-manager` — baixa e gerencia o ChromeDriver
 - `gTTS` — gera o áudio da voz sintetizada
-- `pygame` — toca o áudio em todos os dispositivos de saída
+- `pygame` — toca o áudio (por padrão só na saída padrão do Windows)
 - `pystray` — ícone na bandeja do Windows
 - `Pillow` — desenha o ícone da bandeja
 - `psutil` — rastreia o processo do Chrome pela janela
@@ -341,21 +248,9 @@ Basta salvar o arquivo — o script recarrega sozinho.
 
 ### 3. Executar
 
-- **Modo normal (console visível)** — melhor para testar:
+Duplo clique em **`iniciar_monitor.pyw`** (ou no `.exe`). Para testar com console: `python SCRIPT_EXPLICA.py`. Detalhes em [Como executar](#como-executar).
 
-  ```bash
-  python SCRIPT_EXPLICA.py
-  ```
-
-  O script faz login, vai para a lista de espera e começa a monitorar. Ao detectar uma marcação cirúrgica válida, dispara o alarme.
-
-- **Modo invisível** — para o dia a dia, sem janela de terminal:
-
-  ```bash
-  executar_iniciar_explica.BAT
-  ```
-
-  O Chrome roda fora da tela e o programa fica no ícone da bandeja (perto do relógio).
+O Chrome roda fora da tela e o programa fica no ícone da bandeja (perto do relógio). A **cor do ícone** mostra o estado: 🟢 conectado, 🟠 recuperando, ⚪ sem internet, 🔴 falhas repetidas. O painel mostra a mesma informação no topo (`● Conectado | último OK há 8s | v2.0.0`).
 
 ### 4. Janela de configurações (⚙️ no painel)
 
@@ -373,7 +268,8 @@ No painel (ícone da bandeja → Mostrar), o botão **`⚙️ Configurações`**
 
   O filtro anterior fica salvo em `filtros.backup.json` antes de cada troca.
 - **Login** — e-mail/usuário, senha (com opção "mostrar senha") e a rota (`auto` / `sso` / `legado`).
-- **Alertas** — liga/desliga a janela piscando e a voz, além de `pausa_minutos` e `intervalo_busca_segundos`.
+- **Alertas** — liga/desliga a janela piscando e a voz, `pausa_minutos`, `intervalo_busca_segundos`, a **saída da voz** (`padrao`/`todos`/um dispositivo) e o anti-repetição.
+- **Sistema** — versão instalada, atualização automática (liga/desliga, intervalo, canal), limites do watchdog e os botões **Procurar atualização agora** e **Abrir pasta de logs**.
 
 O botão **💾 Salvar** grava direto em `filtros.json` e `credenciais.json` — **mesmo formato de antes** (`_comentario` e as chaves de URL são preservadas). Senhas e alertas passam a valer na hora.
 
@@ -384,13 +280,77 @@ O botão **💾 Salvar** grava direto em `filtros.json` e `credenciais.json` —
 - **Clique no ícone** → mostra/oculta o painel e o navegador.
 - **Botão direito → Encerrar Sistema** → fecha o Chrome, apaga o áudio temporário e sai.
 
-### 5. Verificação de erros
+### 6. Logs
 
-No modo invisível, qualquer falha vai para `error_log.txt`. Se precisar ver a mensagem no console, use `DEBUG_EXECUTAR_EXPLICA.BAT`.
+Tudo vai para `logs/monitor.log` com data e hora (cada reinício do watchdog aparece com o motivo, ex.: `[N1] Página com problema (branca...) — recarregando`). O supervisor grava em `logs/supervisor.log`.
 
-### 6. Reinício automático
+---
 
-Se o script cair, o modo invisível reinicia sozinho em 5 segundos — o monitoramento não fica parado.
+## Watchdog (auto-recuperação)
+
+Antes, o laço principal engolia **qualquer** erro e tentava de novo para sempre, sem log: se a sessão do Feegow caía, o Chrome travava ou a página ficava em branco, o monitor parecia ligado mas não avisava mais nada. Agora existe um **batimento** e uma recuperação em níveis.
+
+**Batimento:** a cada ciclo em que a Lista de Espera respondeu (botão "Chamar senha" clicado e modal avaliado, ou a página confirmada viva por JavaScript) o horário é registrado. Uma thread separada (watchdog) olha esse horário a cada 15 s.
+
+| Nível | Quando | O que faz |
+| :--- | :--- | :--- |
+| N1 | Uma falha no ciclo | Diagnostica a página: **login** → faz o login de novo; **branca / erro / outra página** → recarrega a Lista de Espera (até 4 vezes seguidas); **sem o botão mas viva** → recarrega no máximo a cada 5 min. |
+| N2 | 5 falhas seguidas, Chrome morto, ou **180 s sem batimento** | Fecha o Chrome do monitor (destrava qualquer chamada pendurada) e abre de novo, com espera crescente: 5 s, 15 s, 30 s, 1, 2, 4 min… No máximo 6 reinícios por hora; passou disso, espera 15 min e avisa na bandeja. |
+| N3 | Nem fechando o Chrome o monitor voltou em 5 min | Reinicia o programa inteiro. No máximo 4 vezes por hora (contador gravado em disco, vale entre reinícios). |
+
+Também:
+
+- **Sem internet:** o monitor espera a conexão voltar (ícone ⚪) e não reinicia nada à toa.
+- **PC suspenso/hibernado:** ao voltar, o watchdog percebe o "pulo" do relógio, dá uma folga e recarrega a página.
+- **Aba congelada pelo Chrome:** o Chrome é aberto com `--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding` e sem detecção de oclusão/economia de memória — a janela fica fora da tela e, sem isso, o Chrome tratava a aba como em segundo plano (timers lentos, Page Lifecycle *freeze*, descarte da aba).
+- **Prevenção:** a Lista de Espera é recarregada a cada 30 min (sem alarme tocando). Dá para reabrir o Chrome a cada N horas (`watchdog_reiniciar_chrome_horas`, desligado por padrão).
+- **Tempo limite** em toda chamada do navegador (`page_load_timeout` 60 s, `script_timeout` 30 s): nada fica pendurado para sempre.
+- **Instância única:** um segundo monitor aberto no mesmo PC sai sozinho (antes os dois brigavam pelo perfil do Chrome e a fala saía duplicada).
+
+Configuração no `filtros.json` (ou na aba **Sistema**):
+
+| Chave | Padrão | O que faz |
+| :--- | :--- | :--- |
+| `watchdog_limite_sem_batimento_segundos` | `180` | Tempo sem batimento para o watchdog reabrir o Chrome (mínimo 60). |
+| `watchdog_recarregar_pagina_minutos` | `30` | Recarga preventiva da Lista de Espera (`0` = nunca). |
+| `watchdog_reiniciar_chrome_horas` | `0` | Reabre o Chrome a cada N horas (`0` = nunca). |
+| `watchdog_max_reinicios_por_hora` | `6` | Teto de reinícios do Chrome por hora. |
+
+---
+
+## Atualização automática
+
+O programa consulta `https://raw.githubusercontent.com/Nicker2/script-monitoramento/<canal>/versao.json` a cada **60 min** (primeira consulta 90 s depois de abrir). Se a versão de lá for maior que a instalada:
+
+1. Espera um **momento seguro**: sem alarme tocando, sem recuperação em andamento e com a página respondendo.
+2. Baixa e **valida**: com o `.py`, confere o tamanho mínimo, a primeira linha (`# MONITOR-FEEGOW-SCRIPT`), se o `VERSAO` do arquivo é o mesmo do `versao.json`, o `sha256` e se o código compila. Com o `.exe`, exige `sha256_exe` e cabeçalho `MZ`.
+3. Guarda a versão atual como `SCRIPT_EXPLICA.py.anterior` (ou `MonitorFeegow.exe.anterior`), coloca a nova no lugar e reinicia.
+4. A versão nova fica **em teste** (`atualizacao_estado.json`) até o primeiro ciclo de monitoramento OK. Se ela reiniciar 3 vezes sem chegar lá, ou passar 20 min online sem conseguir monitorar, **volta sozinha para a anterior** e essa versão fica bloqueada naquela máquina.
+
+Pastas que são um clone do git **não** são atualizadas (use `git pull`). Também dá para procurar na hora: bandeja → **Procurar atualização**, ou o botão na aba **Sistema**.
+
+| Chave | Padrão | O que faz |
+| :--- | :--- | :--- |
+| `auto_atualizar` | `true` | Liga/desliga. |
+| `atualizacao_intervalo_minutos` | `60` | Intervalo entre consultas (mínimo 10). |
+| `atualizacao_canal` | `"main"` | Branch consultada. Para testar uma branch numa máquina só, coloque o nome dela aqui. |
+
+**Para publicar uma versão nova:**
+
+1. Suba o `VERSAO = "x.y.z"` no topo do `SCRIPT_EXPLICA.py`.
+2. `python ferramentas/gerar_versao.py --notas "o que mudou"` (atualiza o `versao.json` com o sha256).
+3. Commit do `SCRIPT_EXPLICA.py` **junto** com o `versao.json` e push na `main`.
+4. Para quem usa o `.exe`: compile (`compilar.bat`), anexe o `MonitorFeegow.exe` na release e rode `python ferramentas/gerar_versao.py --exe dist\MonitorFeegow.exe` antes do commit. Sem `sha256_exe`, os `.exe` simplesmente não se atualizam.
+
+---
+
+## Áudio: só a saída padrão
+
+Antes, a fala tocava em **todos** os dispositivos de som, um depois do outro (alto-falante, monitor HDMI, fone…): a mesma frase saía 2–3 vezes seguidas. Agora:
+
+- `"saida_audio": "padrao"` (padrão) — fala **uma vez**, na saída padrão do Windows. `"todos"` volta ao comportamento antigo; o nome exato de um dispositivo fala só nele.
+- `"anti_repeticao_segundos": 60` — a mesma senha não é anunciada de novo dentro dessa janela (por exemplo, quando o alarme é desarmado pelo tempo máximo e a senha continua na tela). `0` desliga. As repetições do **mesmo** alarme (`intervalo_repeticao_segundos`) continuam normais.
+- Uma fala por vez (trava interna) e **um monitor por PC** (instância única): duas cópias abertas não falam ao mesmo tempo.
 
 ---
 
@@ -463,6 +423,10 @@ Na primeira execução ele cria os dois sozinhos e abre a caixa pedindo login/se
 
 | Sintoma | Causa provável / solução |
 | :--- | :--- |
+| Para de avisar no meio do dia | Corrigido pelo [watchdog](#watchdog-auto-recuperação). Veja em `logs/monitor.log` as linhas `[N1]`/`[N2]`/`[N3]` com o motivo de cada recuperação. |
+| A voz sai duas ou três vezes | Era a fala tocando em cada dispositivo. Agora `saida_audio` = `padrao`. Se ainda duplicar, confira se não há dois monitores (o segundo agora fecha sozinho) ou se o Windows está com "Ouvir este dispositivo" ligado. |
+| Não atualizou sozinho | Veja `logs/monitor.log` (`Atualização:`). Pasta com `.git` não se atualiza; `.exe` só atualiza se o `versao.json` tiver `sha256_exe`. |
+| Atualizou e voltou para a versão antiga | A versão nova não conseguiu monitorar e foi revertida (ver `atualizacao_estado.json`, campo `motivo`). |
 | O alarme não toca | Falta internet (o gTTS gera o áudio na hora). O log mostra "Falha ao gerar áudio de emergência". O alarme visual continua piscando. |
 | Toca em um dispositivo só | Confira em "Testes de Hardware de Áudio" no painel se todos os dispositivos listados respondem ao "Testar". |
 | Uma chamada real está sendo ignorada | Alguma palavra da `blacklist` está no texto do botão. Veja no log a linha `🔎 Botão '...' -> blacklist ('...')` e ajuste o `filtros.json`. |
@@ -514,6 +478,18 @@ Regras de segurança:
 ---
 
 ## Histórico de Alterações
+
+### v2.0.0 — watchdog, atualização automática e inicialização simples
+
+- **Watchdog** com batimento e recuperação em 3 níveis (recarregar/relogar → reabrir o Chrome → reiniciar o programa), com backoff e limites por hora; trata sessão caída, tela branca, página travada, internet fora e PC suspenso.
+- **Flags anti-congelamento** no Chrome (a aba fora da tela era tratada como segundo plano) e tempo limite em toda chamada do navegador.
+- **Atualização automática** pelo `versao.json` do GitHub, com validação, momento seguro e rollback.
+- **Fala só na saída padrão** (antes saía em todos os dispositivos) + anti-repetição da mesma senha + instância única.
+- **Um ponto de entrada:** `iniciar_monitor.pyw` (supervisor) + instalador do início automático.
+- **Log em arquivo** com rotação (`logs/monitor.log`); o painel não é mais atualizado direto pela thread do Selenium (Tk não é thread-safe) e guarda só as últimas 3000 linhas.
+- **Indicador de estado** na bandeja (cor) e no painel; aba **Sistema** na janela de configurações.
+- Corrigido: o botão **CIENTE** estourava `KeyError: 'termo_gatilho'`.
+
 
 ### Configuração externa em JSON (atual)
 

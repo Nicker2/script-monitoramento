@@ -1,17 +1,25 @@
+# MONITOR-FEEGOW-SCRIPT :: Monitor de Senha do Feegow (github.com/Nicker2/script-monitoramento)
+# A linha acima identifica este arquivo na atualização automática: não remova.
 import io
 import os
 import re
 import sys
 import time
+import queue
+import socket
+import hashlib
 import threading
 import datetime
 import ctypes
 import json
 import shutil
+import logging
+import logging.handlers
 import unicodedata
+import urllib.request
 import tkinter as tk
 from tkinter import scrolledtext
-import tempfile # NOVA BIBLIOTECA PARA USAR A PASTA TEMP DO WINDOWS
+import tempfile  # pasta TEMP do Windows (sem erro 13 de permissão)
 import subprocess
 
 
@@ -40,6 +48,239 @@ if sys.stdout is None:
     sys.stdout = _FluxoSemConsole()
 if sys.stderr is None:
     sys.stderr = _FluxoSemConsole()
+
+
+# ==============================================================================
+# ⚙️ CONFIGURAÇÃO GERAL DO PROGRAMA
+#    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
+#    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
+# ==============================================================================
+VERSAO = "2.0.0"
+MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
+REPO_GITHUB = "Nicker2/script-monitoramento"
+CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
+NOME_ARQUIVO_VERSAO = "versao.json"
+URL_RAW = "https://raw.githubusercontent.com/{repo}/{canal}/{arquivo}"
+TAMANHO_MINIMO_SCRIPT = 40_000                  # bytes; menor que isso é página de erro
+TAMANHO_MINIMO_EXE = 5_000_000
+CODIGO_SAIDA_REINICIAR = 75                     # iniciar_monitor.pyw relança na hora
+CODIGO_SAIDA_OUTRA_INSTANCIA = 3                # já existe um monitor rodando
+MAX_INICIOS_SEM_CONFIRMAR = 3                   # versão nova que não confirma em 3 inícios -> volta
+NOME_MUTEX = "Local\\MonitorFeegowSenha"        # trava de instância única
+WATCHDOG_PERIODO_SEGUNDOS = 15                  # de quanto em quanto tempo o watchdog olha
+LOG_MAX_LINHAS_PAINEL = 3000                    # o painel guarda só as últimas N linhas
+
+
+def _rodando_compilado():
+    return "__compiled__" in globals() or getattr(sys, "frozen", False)
+
+
+def _pasta_do_programa():
+    """Pasta dos JSONs — vale rodando o .py e também o .exe compilado.
+
+    No .exe (Nuitka --onefile) o `__file__` aponta para a pasta temporária de
+    extração, que é apagada ao fechar; aí a referência certa é o executável.
+    """
+    if _rodando_compilado():
+        candidatos = [
+            os.environ.get("NUITKA_ONEFILE_BINARY", ""),
+            sys.argv[0] if sys.argv else "",
+            sys.executable,
+        ]
+        for caminho in candidatos:
+            if caminho and os.path.isfile(caminho):
+                return os.path.dirname(os.path.abspath(caminho))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+PASTA_SCRIPT = _pasta_do_programa()
+PASTA_LOGS = os.path.join(PASTA_SCRIPT, "logs")
+ARQ_LOG = os.path.join(PASTA_LOGS, "monitor.log")
+ARQ_ESTADO_ATUALIZACAO = os.path.join(PASTA_SCRIPT, "atualizacao_estado.json")
+ARQ_ESTADO_WATCHDOG = os.path.join(PASTA_LOGS, "watchdog_estado.json")
+
+
+def _configurar_log_arquivo():
+    """logs/monitor.log com rotação (1 MB x 5 arquivos)."""
+    registro = logging.getLogger("monitor")
+    registro.setLevel(logging.INFO)
+    registro.propagate = False
+    if registro.handlers:
+        return registro
+    try:
+        os.makedirs(PASTA_LOGS, exist_ok=True)
+        manipulador = logging.handlers.RotatingFileHandler(
+            ARQ_LOG, maxBytes=1_000_000, backupCount=5, encoding="utf-8", delay=True)
+        manipulador.setFormatter(logging.Formatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S"))
+        registro.addHandler(manipulador)
+    except Exception:
+        registro.addHandler(logging.NullHandler())
+    return registro
+
+
+_LOGGER = _configurar_log_arquivo()
+
+
+def _caminho_programa_atual():
+    """Arquivo que a atualização substitui: o .exe compilado ou este .py."""
+    if _rodando_compilado():
+        for caminho in (os.environ.get("NUITKA_ONEFILE_BINARY", ""),
+                        sys.argv[0] if sys.argv else "", sys.executable):
+            if caminho and os.path.isfile(caminho) and caminho.lower().endswith(".exe"):
+                return os.path.abspath(caminho)
+    return os.path.abspath(__file__)
+
+
+def _supervisionado():
+    """True quando quem abriu foi o iniciar_monitor.pyw (ele relança sozinho)."""
+    return os.environ.get("MONITOR_SUPERVISOR") == "1"
+
+
+def _comando_relancar():
+    alvo = _caminho_programa_atual()
+    argumentos = [a for a in sys.argv[1:] if a != "--reiniciado"] + ["--reiniciado"]
+    if alvo.lower().endswith(".exe"):
+        return [alvo] + argumentos
+    return [sys.executable, alvo] + argumentos
+
+
+def relancar_processo_agora():
+    """Sobe o próximo processo e sai. Quem chama já deve ter fechado o Chrome.
+
+    Com o supervisor (iniciar_monitor.pyw) só sai com o código 75 e ele relança;
+    sem supervisor, o próprio programa abre a nova instância antes de sair.
+    """
+    _liberar_instancia_unica()
+    if _supervisionado():
+        os._exit(CODIGO_SAIDA_REINICIAR)
+    try:
+        comando = _comando_relancar()
+        com_console = os.path.basename(comando[0]).lower() == "python.exe"
+        flags = 0x00000010 if com_console else 0x00000008  # NEW_CONSOLE / DETACHED_PROCESS
+        subprocess.Popen(comando, cwd=PASTA_SCRIPT, creationflags=flags | 0x00000200, close_fds=True)
+    except Exception as e:
+        _LOGGER.info(f"Falha ao relançar o programa: {e}")
+    os._exit(0)
+
+
+# --- Instância única -----------------------------------------------------------
+_MUTEX = None
+
+
+def garantir_instancia_unica():
+    """Impede dois monitores no mesmo PC (dois Chromes brigando pelo perfil e
+    a fala saindo duplicada). Depois de um reinício espera a instância antiga sair."""
+    global _MUTEX
+    if os.name != "nt":
+        return True
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    except Exception:
+        return True
+    espera = 45 if "--reiniciado" in sys.argv else 3
+    fim = time.time() + espera
+    while True:
+        handle = kernel32.CreateMutexW(None, False, NOME_MUTEX)
+        erro = ctypes.get_last_error()
+        if handle and erro != 183:  # 183 = ERROR_ALREADY_EXISTS
+            _MUTEX = handle
+            return True
+        if handle:
+            kernel32.CloseHandle(handle)
+        if time.time() > fim:
+            return False
+        time.sleep(1)
+
+
+def _liberar_instancia_unica():
+    global _MUTEX
+    if _MUTEX:
+        try:
+            ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(_MUTEX))
+        except Exception:
+            pass
+        _MUTEX = None
+
+
+# --- Atualização em teste: volta para a versão anterior se a nova não firmar ---
+def _ler_estado_atualizacao():
+    try:
+        with open(ARQ_ESTADO_ATUALIZACAO, "r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+        return dados if isinstance(dados, dict) else {}
+    except Exception:
+        return {}
+
+
+def _gravar_estado_atualizacao(dados):
+    try:
+        temporario = ARQ_ESTADO_ATUALIZACAO + ".tmp"
+        with open(temporario, "w", encoding="utf-8") as arquivo:
+            json.dump(dados, arquivo, ensure_ascii=False, indent=2)
+        os.replace(temporario, ARQ_ESTADO_ATUALIZACAO)
+    except Exception as e:
+        _LOGGER.info(f"Não consegui gravar {ARQ_ESTADO_ATUALIZACAO}: {e}")
+
+
+def _restaurar_versao_anterior(estado, motivo):
+    """Troca o arquivo atual pelo backup (.anterior). Funciona com o .exe em uso:
+    o Windows deixa RENOMEAR um executável aberto, só não deixa sobrescrever."""
+    alvo = estado.get("arquivo") or ""
+    backup = estado.get("backup") or ""
+    if not alvo or not backup or not os.path.isfile(backup):
+        _LOGGER.info(f"Rollback impossível: backup ausente ({backup or 'sem caminho'}).")
+        return False
+    falhou = alvo + ".falhou"
+    try:
+        if os.path.exists(falhou):
+            os.remove(falhou)
+    except Exception:
+        pass
+    try:
+        if os.path.exists(alvo):
+            os.replace(alvo, falhou)
+        os.replace(backup, alvo)
+    except Exception as e:
+        _LOGGER.info(f"Rollback falhou: {e}")
+        return False
+    bloqueadas = set(estado.get("bloqueadas") or [])
+    if estado.get("para"):
+        bloqueadas.add(estado["para"])
+    estado.update({
+        "status": "revertida",
+        "motivo": motivo,
+        "revertida_em": datetime.datetime.now().isoformat(timespec="seconds"),
+        "bloqueadas": sorted(bloqueadas),
+    })
+    _gravar_estado_atualizacao(estado)
+    _LOGGER.info(f"↩️ Versão {estado.get('para')} revertida para {estado.get('de')}: {motivo}")
+    return True
+
+
+def _checar_atualizacao_em_teste():
+    """Conta os inícios da versão recém-instalada. Se ela reinicia várias vezes
+    sem chegar ao primeiro ciclo OK, volta para a anterior e relança."""
+    estado = _ler_estado_atualizacao()
+    if estado.get("status") != "em_teste" or estado.get("para") != VERSAO:
+        return
+    estado["inicios"] = int(estado.get("inicios") or 0) + 1
+    if estado["inicios"] > MAX_INICIOS_SEM_CONFIRMAR:
+        if _restaurar_versao_anterior(
+                estado, f"não confirmou após {MAX_INICIOS_SEM_CONFIRMAR} inícios"):
+            relancar_processo_agora()
+        return
+    _gravar_estado_atualizacao(estado)
+
+
+if __name__ == "__main__":
+    _checar_atualizacao_em_teste()
+    if not garantir_instancia_unica():
+        _LOGGER.info("Já existe um Monitor de Senha rodando neste PC — esta cópia foi encerrada.")
+        print("Já existe um Monitor de Senha rodando neste PC. Saindo.")
+        sys.exit(CODIGO_SAIDA_OUTRA_INSTANCIA)
 
 
 # ==============================================================================
@@ -137,7 +378,10 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, ElementNotInteractableException, TimeoutException
+from selenium.common.exceptions import (
+    NoSuchElementException, ElementNotInteractableException, TimeoutException,
+    InvalidSessionIdException, NoSuchWindowException,
+)
 
 # ==============================================================================
 # VARIÁVEIS GLOBAIS E ESTADOS
@@ -160,26 +404,6 @@ ARQUIVO_OFICIAL_ALERTA = os.path.join(PASTA_TEMP, f"alerta_oficial_{int(time.tim
 #   filtros.json      -> blacklist / whitelist / termo gatilho / tempos
 #   credenciais.json  -> usuário e senha do Feegow (nunca versionar)
 # ==============================================================================
-def _pasta_do_programa():
-    """Pasta dos JSONs — vale rodando o .py e também o .exe compilado.
-
-    No .exe (Nuitka --onefile) o `__file__` aponta para a pasta temporária de
-    extração, que é apagada ao fechar; aí a referência certa é o executável.
-    """
-    if "__compiled__" in globals() or getattr(sys, "frozen", False):
-        candidatos = [
-            os.environ.get("NUITKA_ONEFILE_BINARY", ""),
-            sys.argv[0] if sys.argv else "",
-            sys.executable,
-        ]
-        for caminho in candidatos:
-            if caminho and os.path.isfile(caminho):
-                return os.path.dirname(os.path.abspath(caminho))
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-PASTA_SCRIPT = _pasta_do_programa()
-
 ARQ_FILTROS = os.path.join(PASTA_SCRIPT, "filtros.json")
 ARQ_CREDENCIAIS = os.path.join(PASTA_SCRIPT, "credenciais.json")
 ARQ_CREDENCIAIS_EXEMPLO = os.path.join(PASTA_SCRIPT, "credenciais.exemplo.json")
@@ -224,6 +448,19 @@ FILTROS_PADRAO = {
     "alarme_max_segundos": 120,
     "intervalo_repeticao_segundos": 15,
     "volume_alarme": 100,
+    # áudio: "padrao" = só a saída padrão do Windows (sem fala duplicada),
+    # "todos" = toca em cada dispositivo, ou o nome exato de um dispositivo.
+    "saida_audio": "padrao",
+    "anti_repeticao_segundos": 60,
+    # watchdog (auto-recuperação)
+    "watchdog_limite_sem_batimento_segundos": 180,
+    "watchdog_recarregar_pagina_minutos": 30,
+    "watchdog_reiniciar_chrome_horas": 0,
+    "watchdog_max_reinicios_por_hora": 6,
+    # atualização automática pelo GitHub (versao.json)
+    "auto_atualizar": True,
+    "atualizacao_intervalo_minutos": 60,
+    "atualizacao_canal": "main",
 }
 
 # Padrões prontos de filtro (botões na janela de configuração)
@@ -289,6 +526,27 @@ _SELENIUM_RODANDO = False
 _PEDIDO_CRED_PENDENTE = False
 _CRED_ARQUIVO_CRIADO = False
 _TICKET_ALARME = ""
+
+# Estado do watchdog / atualização (ver seções 🩺 e ⬆️)
+_ENCERRANDO = False
+_ETAPA = "parado"              # parado | abrindo_chrome | login | monitorando | offline | aguardando_login
+_ULTIMO_PROGRESSO = time.time()  # qualquer avanço do monitor (etapa, tentativa, ciclo, espera proposital)
+_ULTIMO_OK = 0.0                 # último ciclo em que a página respondeu certo
+_PEDIDO_REINICIO_CHROME = ""     # motivo, quando o watchdog manda reabrir o Chrome
+_PEDIDO_RECARGA = False
+_HORA_PEDIDO_CHROME = 0.0
+_REINICIOS_CHROME = []
+_STATUS = ("iniciando", "Iniciando...")
+_INICIO_PROCESSO = time.time()
+_PRIMEIRO_OK = False
+_THREAD_MONITOR = None
+_TRAVA_MONITOR = threading.Lock()
+_MONITOR_DESEJADO = False
+_CRED_RECUSADAS = False
+_ULTIMO_RELOAD_SEM_BOTAO = 0.0
+_OFFLINE_DESDE = 0.0
+_ATUALIZACAO_ADIADA = False
+_AVISOU_GIT = False
 
 
 def normalizar_texto(texto):
@@ -422,6 +680,20 @@ def carregar_filtros(forcar=False):
             "alarme_max_segundos": _para_int(combinado.get("alarme_max_segundos"), 120, 0),
             "intervalo_repeticao_segundos": _para_int(combinado.get("intervalo_repeticao_segundos"), 15, 1),
             "volume_alarme": _para_int(combinado.get("volume_alarme"), 100, 0, 100),
+            "saida_audio": str(combinado.get("saida_audio") or "padrao").strip(),
+            "anti_repeticao_segundos": _para_int(combinado.get("anti_repeticao_segundos"), 60, 0),
+            "watchdog_limite_sem_batimento_segundos": _para_int(
+                combinado.get("watchdog_limite_sem_batimento_segundos"), 180, 60),
+            "watchdog_recarregar_pagina_minutos": _para_int(
+                combinado.get("watchdog_recarregar_pagina_minutos"), 30, 0),
+            "watchdog_reiniciar_chrome_horas": _para_int(
+                combinado.get("watchdog_reiniciar_chrome_horas"), 0, 0),
+            "watchdog_max_reinicios_por_hora": _para_int(
+                combinado.get("watchdog_max_reinicios_por_hora"), 6, 1),
+            "auto_atualizar": _para_bool(combinado.get("auto_atualizar"), True),
+            "atualizacao_intervalo_minutos": _para_int(
+                combinado.get("atualizacao_intervalo_minutos"), 60, 10),
+            "atualizacao_canal": str(combinado.get("atualizacao_canal") or CANAL_ATUALIZACAO_PADRAO).strip(),
         }
         _FILTROS_MTIME = mtime
         log_msg(
@@ -592,19 +864,53 @@ except Exception:
 # ==============================================================================
 # FUNÇÕES DE INTERFACE E JANELAS (TKINTER & OS)
 # ==============================================================================
+_FILA_LOG = queue.Queue()
+
+
 def log_msg(mensagem):
+    """Log com hora: console + logs/monitor.log + painel.
+
+    Pode ser chamado de qualquer thread. O painel (Tk) NÃO é tocado daqui:
+    a linha vai para uma fila que a thread do Tk esvazia (_drenar_fila_log).
+    Antes o Selenium escrevia direto no widget do Tk, que não é thread-safe —
+    isso podia travar o painel depois de horas rodando.
+    """
     timestamp = datetime.datetime.now().strftime("[%H:%M:%S]")
     texto_formatado = f"{timestamp} - {mensagem}\n"
-    print(texto_formatado, end="")
-    
-    if 'janela_logs' in globals():
+    try:
+        print(texto_formatado, end="", flush=True)
+    except Exception:
+        pass
+    try:
+        _LOGGER.info(str(mensagem))
+    except Exception:
+        pass
+    _FILA_LOG.put(texto_formatado)
+
+
+def _drenar_fila_log():
+    """Roda na thread do Tk: passa a fila para o painel e corta o excesso."""
+    lote = []
+    try:
+        while len(lote) < 500:
+            lote.append(_FILA_LOG.get_nowait())
+    except queue.Empty:
+        pass
+    if lote and 'janela_logs' in globals():
         try:
             janela_logs.configure(state='normal')
-            janela_logs.insert(tk.END, texto_formatado)
+            janela_logs.insert(tk.END, "".join(lote))
+            linhas = int(janela_logs.index("end-1c").split(".")[0])
+            if linhas > LOG_MAX_LINHAS_PAINEL:
+                janela_logs.delete("1.0", f"{linhas - LOG_MAX_LINHAS_PAINEL}.0")
             janela_logs.see(tk.END)
             janela_logs.configure(state='disabled')
-        except:
+        except Exception:
             pass
+    try:
+        root.after(300, _drenar_fila_log)
+    except Exception:
+        pass
 
 def capturar_hwnd_pelo_pid():
     if driver is None:
@@ -772,7 +1078,10 @@ def desarmar_alarme(manual=False):
     if manual:
         cfg = carregar_filtros()
         pausa_ate = datetime.datetime.now() + datetime.timedelta(minutes=cfg["pausa_minutos"])
-        log_msg(f"✅ Alerta pausado manualmente por {cfg['pausa_minutos']} min. Busca ignorará {cfg['termo_gatilho']} até {pausa_ate.strftime('%H:%M:%S')}.")
+        # (antes usava cfg['termo_gatilho'], chave que não existe mais: o CIENTE
+        #  estourava KeyError no Tk depois de pausar)
+        log_msg(f"✅ Alerta pausado manualmente por {cfg['pausa_minutos']} min "
+                f"(até {pausa_ate.strftime('%H:%M:%S')}).")
     else:
         log_msg("🔄 A senha sumiu. Desarme remoto efetuado. Retomando busca imediata.")
 
@@ -789,10 +1098,44 @@ def preparar_audio_inicial():
     except Exception as e:
         log_msg(f"Erro ao pré-carregar áudio inicial: {str(e)}")
 
+_TRAVA_AUDIO = threading.Lock()      # uma fala por vez, nunca duas sobrepostas
+_ULTIMO_ANUNCIO = {}                 # senha normalizada -> hora do último anúncio
+
+
+def dispositivos_de_saida(cfg=None):
+    """Para onde a fala vai. None = saída PADRÃO do Windows.
+
+    Antes a fala tocava em TODOS os dispositivos, um depois do outro (alto-falante,
+    fone, monitor HDMI...): a mesma frase saía 2-3 vezes seguidas. Agora o padrão é
+    só a saída padrão do sistema; "todos" continua disponível no filtros.json.
+    """
+    cfg = cfg or carregar_filtros()
+    escolha = str(cfg.get("saida_audio") or "padrao").strip()
+    chave = normalizar_texto(escolha)
+    if chave in ("", "PADRAO", "DEFAULT", "SISTEMA"):
+        return [None]
+    if chave in ("TODOS", "TODAS", "ALL"):
+        return list(DISPOSITIVOS_AUDIO) or [None]
+    for nome in DISPOSITIVOS_AUDIO:
+        if normalizar_texto(nome) == chave:
+            return [nome]
+    log_msg(f"⚠️ Dispositivo de áudio '{escolha}' não encontrado — usando a saída padrão.")
+    return [None]
+
+
 def tocar_audio_em_dispositivo(nome_dispositivo, arquivo_audio, volume=1.0):
+    """Toca o mp3 no dispositivo informado (None = saída padrão do Windows)."""
+    with _TRAVA_AUDIO:
+        _tocar_audio_sem_trava(nome_dispositivo, arquivo_audio, volume)
+
+
+def _tocar_audio_sem_trava(nome_dispositivo, arquivo_audio, volume=1.0):
     try:
         pygame.mixer.quit()
-        pygame.mixer.init(devicename=nome_dispositivo)
+        if nome_dispositivo:
+            pygame.mixer.init(devicename=nome_dispositivo)
+        else:
+            pygame.mixer.init()
         pygame.mixer.music.load(arquivo_audio)
         pygame.mixer.music.set_volume(max(0.0, min(1.0, volume)))
         pygame.mixer.music.play()
@@ -805,18 +1148,19 @@ def tocar_audio_em_dispositivo(nome_dispositivo, arquivo_audio, volume=1.0):
     except Exception:
         pass
 
-def gerar_e_tocar_alerta_teste(mensagem, modo="todos", dispositivo_especifico=None):
+def gerar_e_tocar_alerta_teste(mensagem, modo="configurado", dispositivo_especifico=None):
+    """Teste do painel. 'configurado' = mesma saída do alarme; 'unico' = um dispositivo."""
     try:
         timestamp = int(time.time() * 1000)
         audio_file = os.path.join(PASTA_TEMP, f"alerta_teste_{timestamp}.mp3")
         tts = gTTS(text=mensagem, lang='pt')
         tts.save(audio_file)
-        
-        if modo == "todos":
-            for disp in DISPOSITIVOS_AUDIO:
-                tocar_audio_em_dispositivo(disp, audio_file)
-        elif modo == "unico" and dispositivo_especifico:
+
+        if modo == "unico" and dispositivo_especifico:
             tocar_audio_em_dispositivo(dispositivo_especifico, audio_file)
+        else:
+            for disp in dispositivos_de_saida():
+                tocar_audio_em_dispositivo(disp, audio_file)
             
         pygame.mixer.quit()
         try: os.remove(audio_file)
@@ -855,10 +1199,11 @@ def loop_audio_alarme():
                 break
 
             if os.path.exists(ARQUIVO_OFICIAL_ALERTA):
-                for disp in DISPOSITIVOS_AUDIO:
+                for disp in dispositivos_de_saida(cfg):
                     if not alarme_ativo:
                         break
                     tocar_audio_em_dispositivo(disp, ARQUIVO_OFICIAL_ALERTA, volume)
+                _ULTIMO_ANUNCIO[normalizar_texto(_TICKET_ALARME)] = time.time()
 
             for _ in range(intervalo):
                 if not alarme_ativo or estourou():
@@ -868,6 +1213,26 @@ def loop_audio_alarme():
         pygame.mixer.quit()
     except Exception as e:
         log_msg(f"Erro no loop de alarme: {e}")
+
+_AVISO_REPETICAO = {}
+
+
+def anunciado_recentemente(ticket, cfg=None):
+    """True se a mesma senha já foi falada há menos de anti_repeticao_segundos."""
+    cfg = cfg or carregar_filtros()
+    janela = _para_int(cfg.get("anti_repeticao_segundos"), 60, 0)
+    chave = normalizar_texto(ticket)
+    if not janela or not chave:
+        return False
+    ultimo = _ULTIMO_ANUNCIO.get(chave)
+    if ultimo is None or (time.time() - ultimo) >= janela:
+        return False
+    if time.time() - _AVISO_REPETICAO.get(chave, 0) > janela:
+        _AVISO_REPETICAO[chave] = time.time()
+        log_msg(f"🔕 '{ticket}' já foi anunciada há {int(time.time() - ultimo)}s — "
+                f"sem repetir a fala (anti_repeticao_segundos={janela}).")
+    return True
+
 
 def disparar_estado_alarme():
     global alarme_ativo
@@ -881,6 +1246,13 @@ def disparar_estado_alarme():
     if not quer_tela and not quer_voz:
         log_msg("⚠️ Chamada detectada, mas alerta_tela e alerta_voz estão desligados no filtros.json — nada será exibido nem tocado.")
         return
+
+    # Anti-repetição: a MESMA senha não é anunciada de novo dentro da janela
+    # (ex.: alarme desarmado pelo tempo máximo e a senha ainda na tela).
+    if quer_voz and anunciado_recentemente(_TICKET_ALARME, cfg):
+        quer_voz = False
+        if not quer_tela:
+            return
 
     alarme_ativo = True
     ativos = []
@@ -1254,79 +1626,166 @@ def criar_driver_chrome(options):
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 
-def iniciar_selenium():
-    global driver, CHROME_HWND, _SELENIUM_RODANDO
-    if _SELENIUM_RODANDO:
-        log_msg("🔁 O monitoramento já está rodando — ignorando novo pedido de início.")
-        return
-    _SELENIUM_RODANDO = True
+ARGUMENTOS_CHROME = (
+    "--disable-gpu",
+    "--no-sandbox",
+    "--log-level=3",
+    "--window-position=-10000,-10000",
+    # sem "Restaurar páginas?" e sem telas de primeira execução
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--hide-crash-restore-bubble",
+    "--disable-session-crashed-bubble",
+    "--disable-infobars",
+    # A janela fica fora da tela/oculta: sem estas flags o Chrome trata a aba
+    # como "em segundo plano" e passa a congelar timers, suspender a página
+    # (Page Lifecycle freeze) e até descartar a aba para economizar memória.
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,HighEfficiencyModeAvailable",
+    "--disable-hang-monitor",
+)
+
+
+def _abrir_chrome():
+    """Abre o Chrome (perfil fixo; se falhar, temporário). True quando abriu."""
+    global driver, CHROME_HWND
+    log_msg("Iniciando WebDriver no 'limbo' (fora da tela)...")
+
+    perfil_chrome = _pasta_perfil_chrome()
+    if perfil_chrome:
+        # perfil fixo + Chrome órfão de execução anterior = pasta travada
+        _encerrar_instancias_antigas(perfil_chrome)
+        _limpar_sessao_antiga(perfil_chrome)
+        _marcar_perfil_limpo(perfil_chrome)
+
+    def montar_options(com_perfil=True):
+        opcoes = webdriver.ChromeOptions()
+        opcoes.add_experimental_option(
+            "prefs", {"profile.default_content_setting_values.notifications": 2})
+        for argumento in ARGUMENTOS_CHROME:
+            opcoes.add_argument(argumento)
+        if com_perfil and perfil_chrome:
+            opcoes.add_argument(f"--user-data-dir={perfil_chrome}")
+        return opcoes
+
+    _limpar_scoped_dirs_orfas()
+
     try:
-        log_msg("Iniciando WebDriver no 'limbo' (fora da tela)...")
-
-        perfil_chrome = _pasta_perfil_chrome()
-        if perfil_chrome:
-            # perfil fixo + Chrome órfão de execução anterior = pasta travada
-            _encerrar_instancias_antigas(perfil_chrome)
-            _limpar_sessao_antiga(perfil_chrome)
-            _marcar_perfil_limpo(perfil_chrome)
-
-        def montar_options(com_perfil=True):
-            opcoes = webdriver.ChromeOptions()
-            opcoes.add_experimental_option(
-                "prefs", {"profile.default_content_setting_values.notifications": 2})
-            for argumento in (
-                "--disable-gpu",
-                "--no-sandbox",
-                "--log-level=3",
-                "--window-position=-10000,-10000",
-                # sem "Restaurar páginas?" e sem telas de primeira execução
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--hide-crash-restore-bubble",
-                "--disable-session-crashed-bubble",
-                "--disable-infobars",
-            ):
-                opcoes.add_argument(argumento)
-            if com_perfil and perfil_chrome:
-                opcoes.add_argument(f"--user-data-dir={perfil_chrome}")
-            return opcoes
-
-        _limpar_scoped_dirs_orfas()
-
+        driver = criar_driver_chrome(montar_options(True))
+    except Exception as e:
+        log_msg(f"⚠️ O Chrome não abriu com o perfil fixo ({type(e).__name__}). "
+                "Tentando com perfil temporário...")
         try:
-            driver = criar_driver_chrome(montar_options(True))
-        except Exception as e:
-            log_msg(f"⚠️ O Chrome não abriu com o perfil fixo ({type(e).__name__}). "
-                    "Tentando com perfil temporário...")
-            try:
-                driver = criar_driver_chrome(montar_options(False))
-                log_msg("✔️ Chrome aberto com perfil temporário (o perfil fixo estava em uso).")
-            except Exception as e2:
-                log_msg(f"🛑 O WebDriver não iniciou: {type(e2).__name__}: {e2}")
-                log_msg("   Baixe o chromedriver da sua versão do Chrome em "
-                        "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
-                        f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
-                log_msg("   O monitoramento NÃO foi iniciado. Feche e abra de novo depois de colocar o arquivo.")
-                return
+            driver = criar_driver_chrome(montar_options(False))
+            log_msg("✔️ Chrome aberto com perfil temporário (o perfil fixo estava em uso).")
+        except Exception as e2:
+            log_msg(f"🛑 O WebDriver não iniciou: {type(e2).__name__}: {e2}")
+            log_msg("   Se persistir, baixe o chromedriver da sua versão do Chrome em "
+                    "https://googlechromelabs.github.io/chrome-for-testing/ e salve como "
+                    f"'chromedriver.exe' nesta pasta: {PASTA_SCRIPT}")
+            driver = None
+            return False
 
-        time.sleep(2)
-        CHROME_HWND = capturar_hwnd_pelo_pid()
+    # Nenhuma chamada fica pendurada para sempre: página trava -> exceção -> recuperação
+    try:
+        driver.set_page_load_timeout(60)
+        driver.set_script_timeout(30)
+    except Exception:
+        pass
 
-        if CHROME_HWND:
-            log_msg(f"Navegador interceptado com sucesso pelo PID. HWND: {CHROME_HWND}")
+    time.sleep(2)
+    CHROME_HWND = capturar_hwnd_pelo_pid()
+    if CHROME_HWND:
+        log_msg(f"Navegador interceptado com sucesso pelo PID. HWND: {CHROME_HWND}")
+        if not _janela_visivel():
             gerenciar_janelas("ocultar")
-        else:
-            log_msg("ERRO: Não foi possível rastrear a janela do Chrome gerada.")
+    else:
+        log_msg("ERRO: Não foi possível rastrear a janela do Chrome gerada.")
+    return True
 
-        try:
-            if not fazer_login():
-                log_msg("🛑 Login não concluído — monitoramento não iniciado. Ajuste o credenciais.json e reinicie.")
-                return
-            verificar_botao_chamar_senha()
-        except Exception as e:
-            log_msg(f"Erro Crítico no loop do Selenium: {e}")
+
+def _fechar_chrome():
+    """Fecha o Chrome do monitor sem travar (quit com tempo limite + kill)."""
+    global driver, CHROME_HWND
+    atual, driver, CHROME_HWND = driver, None, None
+    if atual is not None:
+        fechador = threading.Thread(target=lambda: _ignorar_erro(atual.quit), daemon=True)
+        fechador.start()
+        fechador.join(timeout=10)
+    try:
+        _encerrar_instancias_antigas(_pasta_perfil_chrome())
+    except Exception:
+        pass
+
+
+def _ignorar_erro(funcao):
+    try:
+        funcao()
+    except Exception:
+        pass
+
+
+def iniciar_selenium():
+    """Sobe a thread do monitoramento (no máximo uma)."""
+    global _THREAD_MONITOR, _MONITOR_DESEJADO
+    with _TRAVA_MONITOR:
+        if _THREAD_MONITOR is not None and _THREAD_MONITOR.is_alive():
+            log_msg("🔁 O monitoramento já está rodando — ignorando novo pedido de início.")
+            return
+        _MONITOR_DESEJADO = True
+        _THREAD_MONITOR = threading.Thread(target=loop_supervisionado, name="monitor", daemon=True)
+        _THREAD_MONITOR.start()
+
+
+def loop_supervisionado():
+    """Abre o Chrome, faz login e monitora. Se cair, reabre (nível 2) com
+    espera crescente e limite de reinícios por hora."""
+    global _SELENIUM_RODANDO, _PEDIDO_REINICIO_CHROME, _CRED_RECUSADAS
+    _SELENIUM_RODANDO = True
+    _CRED_RECUSADAS = False
+    try:
+        while not _ENCERRANDO:
+            _PEDIDO_REINICIO_CHROME = ""
+            try:
+                motivo = executar_sessao_chrome()
+            except Exception as e:
+                motivo = f"erro inesperado: {type(e).__name__}: {e}"
+            _fechar_chrome()
+            if motivo is None or _ENCERRANDO or _CRED_RECUSADAS:
+                break
+            log_msg(f"♻️ [N2] Reabrindo o Chrome. Motivo: {motivo}")
+            espera = _proxima_espera_reinicio()
+            if espera > 5:
+                log_msg(f"⏳ Aguardando {espera}s antes de reabrir (proteção contra loop de reinício).")
+            _dormir(espera, progresso=True)
     finally:
         _SELENIUM_RODANDO = False
+        _definir_etapa("parado")
+
+
+def executar_sessao_chrome():
+    """Uma "vida" do Chrome. Devolve o motivo para reabrir ou None para parar."""
+    if not internet_ok():
+        aguardar_internet()
+        if _ENCERRANDO:
+            return None
+    _definir_etapa("abrindo_chrome")
+    _atualizar_status("recuperando", "Abrindo o navegador...")
+    if not _abrir_chrome():
+        return "o Chrome não abriu"
+    _definir_etapa("login")
+    _atualizar_status("recuperando", "Entrando no Feegow...")
+    if not fazer_login():
+        if _CRED_RECUSADAS or credenciais_incompletas():
+            _definir_etapa("aguardando_login")
+            _atualizar_status("falha", "Login recusado — confira as credenciais")
+            log_msg("🛑 Login não concluído — monitoramento parado até salvar o login na janela ⚙️.")
+            return None
+        return "o login não foi concluído"
+    return verificar_botao_chamar_senha()
+
 
 # --- Helpers de login ------------------------------------------------------
 def _visivel(driver_alvo, seletores, timeout=12.0):
@@ -1545,9 +2004,13 @@ def fazer_login():
     else:
         rotas = [("SSO", login_sso, url_sso), ("LEGADO", login_legado, url_legado)]
 
+    global _CRED_RECUSADAS
     espera = 5.0
     for tentativa in range(1, 21):
+        if _ENCERRANDO or _PEDIDO_REINICIO_CHROME:
+            return False
         for nome_rota, funcao_login, url in rotas:
+            registrar_batimento(ok=False)  # o login está andando (o watchdog não deve agir)
             log_msg(f"🔐 Login pela rota {nome_rota} (tentativa {tentativa}): {url}")
             try:
                 ok, motivo = funcao_login(usuario, senha, url)
@@ -1561,9 +2024,12 @@ def fazer_login():
                     or "e-mail recusado" in motivo):
                 log_msg("🛑 Credenciais recusadas pelo Feegow. Confira usuario/senha no credenciais.json — "
                         "parando para não travar a conta.")
+                _CRED_RECUSADAS = True
                 solicitar_credenciais("recusadas")
                 return False
-        time.sleep(espera)
+            if _erro_chrome_morto(motivo):
+                return False
+        _dormir(espera, progresso=True)
         espera = min(espera * 1.8, 30.0)
 
     log_msg("🛑 Não foi possível autenticar após várias tentativas.")
@@ -1702,21 +2168,628 @@ def verificar_botao_explicacao():
         fechar_modal()
 
 
+XPATH_BOTAO_CHAMAR = ("//button[contains(concat(' ', normalize-space(@class), ' '), "
+                      "' callTicketBtn ')]")
+ESTADOS_PAGINA_VIVA = ("ok_com_botao", "ok_sem_botao", "carregando")
+
+
+def abrir_lista_espera(url_lista):
+    """Vai (ou volta) para a Lista de Espera."""
+    driver.get(url_lista)
+
+
 def verificar_botao_chamar_senha():
+    """Loop principal do monitoramento.
+
+    A cada ciclo clica em "Chamar senha", avalia o modal e registra o batimento.
+    Se algo falha, diagnostica a página e recupera em níveis:
+      N1 recarregar a Lista de Espera / refazer o login se a sessão caiu;
+      N2 devolver o motivo para o loop_supervisionado reabrir o Chrome.
+    """
+    global _PEDIDO_RECARGA
     cred = carregar_credenciais()
-    driver.get(cred["url_lista_espera"])
-    while True:
+    url_lista = cred["url_lista_espera"]
+    try:
+        abrir_lista_espera(url_lista)
+    except Exception as e:
+        if _erro_chrome_morto(e):
+            return f"Chrome parou ao abrir a lista ({type(e).__name__})"
+    _definir_etapa("monitorando")
+    registrar_batimento(ok=False)
+    falhas = 0
+    ultimo_reload = time.time()
+    inicio_chrome = time.time()
+
+    while not _ENCERRANDO:
+        if _PEDIDO_REINICIO_CHROME:
+            return f"pedido do watchdog ({_PEDIDO_REINICIO_CHROME})"
+        cfg = carregar_filtros()
+
+        if _PEDIDO_RECARGA:
+            _PEDIDO_RECARGA = False
+            log_msg("🔄 [N1] Recarregando a Lista de Espera (pedido do watchdog).")
+            try:
+                abrir_lista_espera(url_lista)
+                ultimo_reload = time.time()
+            except Exception as e:
+                if _erro_chrome_morto(e):
+                    return f"Chrome parou ao recarregar ({type(e).__name__})"
+
         try:
-            cfg = carregar_filtros()
             fechar_modal()
-            botao = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[@class='btn btn-xs btn-default callTicketBtn']"))
-            )
+            botao = WebDriverWait(driver, 12).until(
+                EC.element_to_be_clickable((By.XPATH, XPATH_BOTAO_CHAMAR)))
             botao.click()
             verificar_botao_explicacao()
-            time.sleep(cfg["intervalo_busca_segundos"])
+            if falhas:
+                log_msg(f"✅ Monitoramento normalizado depois de {falhas} falha(s).")
+            falhas = 0
+            registrar_batimento(ok=True)
+            _atualizar_status("ok", "Conectado")
+        except Exception as e:
+            if _erro_chrome_morto(e):
+                return f"Chrome parou de responder ({type(e).__name__})"
+            falhas += 1
+            estado, detalhe = diagnosticar_pagina()
+            motivo = tratar_falha(estado, detalhe, falhas, url_lista)
+            if motivo:
+                return motivo
+            if estado == "login":
+                falhas = 0
+                ultimo_reload = time.time()
+            _dormir(5)
+            continue
+
+        # Manutenção preventiva, só sem alarme tocando
+        if not alarme_ativo:
+            minutos = cfg["watchdog_recarregar_pagina_minutos"]
+            if minutos and time.time() - ultimo_reload > minutos * 60:
+                log_msg(f"🧽 Recarga preventiva da Lista de Espera (a cada {minutos} min).")
+                try:
+                    abrir_lista_espera(url_lista)
+                except Exception as e:
+                    if _erro_chrome_morto(e):
+                        return f"Chrome parou na recarga preventiva ({type(e).__name__})"
+                ultimo_reload = time.time()
+            horas = cfg["watchdog_reiniciar_chrome_horas"]
+            if horas and time.time() - inicio_chrome > horas * 3600:
+                return f"reinício preventivo do Chrome (a cada {horas} h)"
+
+        _dormir(cfg["intervalo_busca_segundos"])
+    return None
+
+
+def diagnosticar_pagina():
+    """Olha a página com JavaScript e devolve (estado, detalhe).
+
+    Estados: chrome_morto, travada, erro_rede, login, branca, outra_pagina,
+    carregando, ok_com_botao, ok_sem_botao.
+    """
+    try:
+        info = driver.execute_script(
+            "var b=document.body;"
+            "return {u: location.href, r: document.readyState,"
+            " t: b ? (b.innerText || '').length : 0,"
+            " btn: !!document.querySelector('button.callTicketBtn'),"
+            " senha: !!document.querySelector(\"input[type='password']\")};") or {}
+    except Exception as e:
+        if _erro_chrome_morto(e):
+            return "chrome_morto", type(e).__name__
+        return "travada", f"o JavaScript da página não respondeu ({type(e).__name__})"
+
+    url = str(info.get("u") or "").lower()
+    if url.startswith("chrome-error://") or "neterror" in url:
+        return "erro_rede", "o Chrome mostrou página de erro de rede"
+    if "p=login" in url or "/sso" in url or (info.get("senha") and "listaespera" not in url):
+        return "login", "a sessão caiu e voltou para a tela de login"
+    if info.get("r") != "complete":
+        return "carregando", f"readyState={info.get('r')}"
+    if int(info.get("t") or 0) < 30:
+        return "branca", "página em branco"
+    if "listaespera" not in url:
+        return "outra_pagina", f"saiu da Lista de Espera ({url[:80]})"
+    if info.get("btn"):
+        return "ok_com_botao", "página OK (botão presente)"
+    return "ok_sem_botao", "página OK, mas sem o botão 'Chamar senha'"
+
+
+def tratar_falha(estado, detalhe, falhas, url_lista):
+    """Decide a recuperação. Devolve None (seguir) ou o motivo para reabrir o Chrome."""
+    global _ULTIMO_RELOAD_SEM_BOTAO
+    if estado == "chrome_morto":
+        return f"Chrome morto ({detalhe})"
+
+    if estado in ("ok_com_botao", "carregando") and falhas < 3:
+        registrar_batimento(ok=False)  # falha passageira (modal na frente, clique interceptado)
+        return None
+
+    if estado == "ok_sem_botao":
+        # a página responde e está na Lista de Espera: conta como viva
+        registrar_batimento(ok=True)
+        if time.time() - _ULTIMO_RELOAD_SEM_BOTAO > 300:
+            _ULTIMO_RELOAD_SEM_BOTAO = time.time()
+            log_msg(f"🔄 [N1] {detalhe} — recarregando a página (no máximo a cada 5 min).")
+            _recarregar_seguro(url_lista)
+        return None
+
+    if estado in ("erro_rede", "branca", "travada") and not internet_ok():
+        aguardar_internet()
+        _recarregar_seguro(url_lista)
+        return None
+
+    if estado == "login":
+        log_msg(f"🔐 [N1] {detalhe}. Entrando de novo...")
+        _definir_etapa("login")
+        _atualizar_status("recuperando", "Sessão caiu — entrando de novo...")
+        if not fazer_login():
+            return "a sessão caiu e o novo login não foi concluído"
+        _recarregar_seguro(url_lista)
+        _definir_etapa("monitorando")
+        return None
+
+    if falhas <= 4:
+        log_msg(f"🔄 [N1] Página com problema ({estado}: {detalhe}) — recarregando (falha {falhas}/4).")
+        _atualizar_status("recuperando", "Recarregando a página...")
+        _recarregar_seguro(url_lista)
+        return None
+
+    return f"{falhas} falhas seguidas ({estado}: {detalhe})"
+
+
+def _recarregar_seguro(url_lista):
+    try:
+        abrir_lista_espera(url_lista)
+    except Exception as e:
+        log_msg(f"⚠️ Recarga falhou: {type(e).__name__}")
+
+
+# ==============================================================================
+# 🩺 WATCHDOG: batimento, internet, suspensão do PC e reinício em níveis
+# ==============================================================================
+ERROS_CHROME_MORTO = (
+    "invalid session id", "no such window", "chrome not reachable", "disconnected",
+    "target window already closed", "session deleted", "connection refused",
+    "max retries exceeded", "failed to establish a new connection", "web view not found",
+    "tab crashed", "no such execution context", "unable to receive message from renderer",
+)
+
+
+def _erro_chrome_morto(erro):
+    if isinstance(erro, (InvalidSessionIdException, NoSuchWindowException)):
+        return True
+    texto = str(erro).lower()
+    return any(trecho in texto for trecho in ERROS_CHROME_MORTO)
+
+
+def _definir_etapa(etapa):
+    global _ETAPA, _ULTIMO_PROGRESSO
+    _ETAPA = etapa
+    _ULTIMO_PROGRESSO = time.time()
+
+
+def registrar_batimento(ok=True):
+    """Batimento: o ciclo andou. ok=True quando a página respondeu certo."""
+    global _ULTIMO_OK, _ULTIMO_PROGRESSO, _PRIMEIRO_OK
+    agora = time.time()
+    _ULTIMO_PROGRESSO = agora
+    if ok:
+        _ULTIMO_OK = agora
+        if not _PRIMEIRO_OK:
+            _PRIMEIRO_OK = True
+            confirmar_atualizacao("primeiro ciclo de monitoramento OK")
+
+
+def _dormir(segundos, progresso=False):
+    """sleep interrompível; com progresso=True o watchdog sabe que é espera de propósito."""
+    fim = time.time() + max(0, segundos)
+    while not _ENCERRANDO and time.time() < fim:
+        if progresso:
+            registrar_batimento(ok=False)
+        time.sleep(min(1.0, max(0.05, fim - time.time())))
+
+
+def internet_ok(timeout=5):
+    for host in ("app.feegow.com", "www.google.com"):
+        try:
+            socket.create_connection((host, 443), timeout=timeout).close()
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def aguardar_internet():
+    """Espera a internet voltar sem escalar a recuperação (equivale ao online/offline)."""
+    global _OFFLINE_DESDE
+    if internet_ok():
+        return
+    _OFFLINE_DESDE = time.time()
+    etapa_anterior = _ETAPA
+    _definir_etapa("offline")
+    log_msg("📴 Sem internet. O monitor espera a conexão voltar (sem reiniciar nada).")
+    _atualizar_status("offline", "Sem internet — aguardando")
+    while not _ENCERRANDO and not internet_ok():
+        _dormir(10, progresso=True)
+    minutos = int((time.time() - _OFFLINE_DESDE) / 60)
+    _OFFLINE_DESDE = 0.0
+    log_msg(f"📶 Internet de volta (fora por ~{minutos} min). Retomando.")
+    _definir_etapa(etapa_anterior if etapa_anterior != "offline" else "monitorando")
+
+
+def _proxima_espera_reinicio():
+    """Backoff exponencial dos reinícios do Chrome + teto por hora."""
+    cfg = carregar_filtros()
+    agora = time.time()
+    _REINICIOS_CHROME[:] = [t for t in _REINICIOS_CHROME if agora - t < 3600]
+    quantidade = len(_REINICIOS_CHROME)
+    _REINICIOS_CHROME.append(agora)
+    if quantidade >= cfg["watchdog_max_reinicios_por_hora"]:
+        log_msg(f"🚧 {quantidade} reinícios do Chrome na última hora — esperando 15 min antes de tentar de novo.")
+        _atualizar_status("falha", "Muitas falhas — nova tentativa em 15 min")
+        _avisar_bandeja("O monitor de senhas está com falhas repetidas. Nova tentativa em 15 minutos.")
+        return 900
+    if quantidade == 0:
+        return 5
+    return min(15 * (2 ** (quantidade - 1)), 600)
+
+
+def _ler_estado_watchdog():
+    try:
+        with open(ARQ_ESTADO_WATCHDOG, "r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+        return dados if isinstance(dados, dict) else {}
+    except Exception:
+        return {}
+
+
+def _pode_reiniciar_processo(maximo_por_hora=4):
+    """Limite persistente (sobrevive ao reinício) para não entrar em loop."""
+    dados = _ler_estado_watchdog()
+    agora = time.time()
+    lista = [t for t in (dados.get("reinicios_processo") or []) if agora - float(t) < 3600]
+    if len(lista) >= maximo_por_hora:
+        return False
+    lista.append(agora)
+    dados["reinicios_processo"] = lista
+    try:
+        os.makedirs(PASTA_LOGS, exist_ok=True)
+        with open(ARQ_ESTADO_WATCHDOG, "w", encoding="utf-8") as arquivo:
+            json.dump(dados, arquivo)
+    except Exception:
+        pass
+    return True
+
+
+def reiniciar_processo(motivo, ignorar_limite=False):
+    """Nível 3: reinicia o programa inteiro (fecha o Chrome, sobe outro processo)."""
+    global _ENCERRANDO
+    if not ignorar_limite and not _pode_reiniciar_processo():
+        log_msg(f"🚧 Reinício do programa pedido ({motivo}), mas já foram 4 na última hora. Segurando.")
+        _atualizar_status("falha", "Falhas repetidas — aguardando")
+        return False
+    log_msg(f"🔁 [N3] Reiniciando o programa inteiro. Motivo: {motivo}")
+    _ENCERRANDO = True
+    _limpeza_para_sair()
+    relancar_processo_agora()
+    return True
+
+
+def thread_watchdog():
+    """Olha o batimento a cada 15 s e age quando o monitor para de andar."""
+    global _ULTIMO_PROGRESSO, _PEDIDO_RECARGA
+    ultimo_giro = time.time()
+    while not _ENCERRANDO:
+        time.sleep(WATCHDOG_PERIODO_SEGUNDOS)
+        agora = time.time()
+        try:
+            # PC suspenso/hibernado: o relógio "pula". Dá uma folga e recarrega a página.
+            if agora - ultimo_giro > max(90, WATCHDOG_PERIODO_SEGUNDOS * 6):
+                log_msg(f"💤 O PC ficou parado/suspenso por ~{int((agora - ultimo_giro) / 60)} min. "
+                        "Conferindo a página...")
+                _ULTIMO_PROGRESSO = agora
+                if _ETAPA == "monitorando":
+                    _PEDIDO_RECARGA = True
+            ultimo_giro = agora
+            _passo_watchdog(agora)
+            _checar_confirmacao_por_tempo(agora)
+        except Exception as e:
+            log_msg(f"⚠️ Watchdog: erro interno ignorado ({type(e).__name__}: {e})")
+
+
+def _passo_watchdog(agora):
+    global _PEDIDO_REINICIO_CHROME, _HORA_PEDIDO_CHROME
+    cfg = carregar_filtros()
+
+    # A thread do monitor morreu sem ninguém pedir? Religa.
+    if (_MONITOR_DESEJADO and not _SELENIUM_RODANDO and not _CRED_RECUSADAS
+            and _ETAPA != "aguardando_login" and not credenciais_incompletas()):
+        log_msg("🩺 Watchdog: o monitoramento tinha parado — religando.")
+        iniciar_selenium()
+        return
+
+    if not _SELENIUM_RODANDO or _ETAPA in ("offline", "parado", "aguardando_login"):
+        return
+
+    limite = cfg["watchdog_limite_sem_batimento_segundos"]
+    if _ETAPA != "monitorando":
+        limite = max(limite, 600)  # abrir o Chrome + login (com bypass) leva mais tempo
+    parado_ha = agora - _ULTIMO_PROGRESSO
+    if parado_ha < limite:
+        if _ETAPA == "monitorando" and _ULTIMO_OK and agora - _ULTIMO_OK > limite:
+            _atualizar_status("recuperando", "Sem resposta da página — recuperando")
+        return
+
+    if not internet_ok():
+        _atualizar_status("offline", "Sem internet — aguardando")
+        return
+
+    if not _PEDIDO_REINICIO_CHROME:
+        _PEDIDO_REINICIO_CHROME = f"sem batimento há {int(parado_ha)}s na etapa '{_ETAPA}'"
+        _HORA_PEDIDO_CHROME = agora
+        log_msg(f"🩺 [N2] Watchdog: {_PEDIDO_REINICIO_CHROME}. Fechando o Chrome para destravar e reabrir.")
+        _atualizar_status("recuperando", "Travou — reabrindo o navegador")
+        # Mata o Chrome do perfil: qualquer chamada do Selenium pendurada estoura e o loop reabre.
+        try:
+            _encerrar_instancias_antigas(_pasta_perfil_chrome())
         except Exception:
-            time.sleep(5)
+            pass
+        return
+
+    if agora - _HORA_PEDIDO_CHROME > 300:
+        # Nem fechando o Chrome a thread voltou: reinicia o programa.
+        if reiniciar_processo(f"monitor travado mesmo após fechar o Chrome ({_PEDIDO_REINICIO_CHROME})"):
+            return
+        _HORA_PEDIDO_CHROME = agora
+
+
+# --- Indicador discreto de estado (bandeja + painel) ---------------------------
+CORES_STATUS = {
+    "iniciando": "#3b82f6",
+    "ok": "#22c55e",
+    "recuperando": "#f59e0b",
+    "offline": "#9ca3af",
+    "falha": "#ef4444",
+}
+
+
+def _atualizar_status(nivel, texto):
+    global _STATUS
+    if _STATUS == (nivel, texto):
+        return
+    _STATUS = (nivel, texto)
+    try:
+        if tray_icon is not None:
+            tray_icon.icon = criar_icone_imagem(CORES_STATUS.get(nivel, "blue"))
+            tray_icon.title = f"Monitor Feegow v{VERSAO} — {texto}"[:120]
+    except Exception:
+        pass
+
+
+def _avisar_bandeja(mensagem):
+    try:
+        if tray_icon is not None and getattr(tray_icon, "HAS_NOTIFICATION", False):
+            tray_icon.notify(mensagem, "Monitor de Senha")
+    except Exception:
+        pass
+
+
+def _texto_status():
+    nivel, texto = _STATUS
+    if _ULTIMO_OK:
+        segundos = int(time.time() - _ULTIMO_OK)
+        ultimo = f"último OK há {segundos}s" if segundos < 120 else f"último OK há {segundos // 60} min"
+    else:
+        ultimo = "aguardando o primeiro ciclo"
+    return nivel, f"● {texto}  |  {ultimo}  |  v{VERSAO}"
+
+
+# ==============================================================================
+# ⬆️ ATUALIZAÇÃO AUTOMÁTICA PELO GITHUB (versao.json)
+# ==============================================================================
+def _url_raw(arquivo, canal=None):
+    canal = canal or carregar_filtros().get("atualizacao_canal") or CANAL_ATUALIZACAO_PADRAO
+    return URL_RAW.format(repo=REPO_GITHUB, canal=canal, arquivo=arquivo) + f"?t={int(time.time())}"
+
+
+def _baixar(url, timeout=60, limite=80_000_000):
+    requisicao = urllib.request.Request(url, headers={
+        "User-Agent": f"MonitorFeegow/{VERSAO}",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    })
+    with urllib.request.urlopen(requisicao, timeout=timeout) as resposta:
+        if getattr(resposta, "status", 200) != 200:
+            raise RuntimeError(f"HTTP {resposta.status}")
+        bruto = resposta.read(limite + 1)
+    if len(bruto) > limite:
+        raise RuntimeError("arquivo grande demais")
+    return bruto
+
+
+def _versao_tupla(texto):
+    numeros = re.findall(r"\d+", str(texto or ""))[:4]
+    return tuple(int(n) for n in numeros) if numeros else (0,)
+
+
+def consultar_versao_remota():
+    dados = json.loads(_baixar(_url_raw(NOME_ARQUIVO_VERSAO), timeout=30).decode("utf-8-sig"))
+    if not isinstance(dados, dict) or not dados.get("versao"):
+        raise ValueError("versao.json sem o campo 'versao'")
+    return dados
+
+
+def validar_script_baixado(bruto, versao_esperada, sha256=""):
+    """Só aceita o arquivo se for MESMO o script, inteiro e sem erro de sintaxe."""
+    if len(bruto) < TAMANHO_MINIMO_SCRIPT:
+        raise ValueError(f"arquivo pequeno demais ({len(bruto)} bytes)")
+    if sha256 and hashlib.sha256(bruto).hexdigest().lower() != sha256.strip().lower():
+        raise ValueError("sha256 não confere com o versao.json")
+    texto = bruto.decode("utf-8")
+    if not texto.lstrip("﻿").startswith(MARCADOR_SCRIPT):
+        raise ValueError("cabeçalho inesperado (não é o SCRIPT_EXPLICA.py)")
+    achado = re.search(r'^VERSAO\s*=\s*"([^"]+)"', texto, re.M)
+    if not achado or achado.group(1) != versao_esperada:
+        raise ValueError(f"VERSAO do arquivo ({achado.group(1) if achado else '?'}) "
+                         f"≠ versao.json ({versao_esperada})")
+    compile(texto, "SCRIPT_EXPLICA.py", "exec")
+    return True
+
+
+def validar_exe_baixado(bruto, sha256):
+    if not sha256:
+        raise ValueError("versao.json sem sha256_exe: o .exe não é atualizado sem conferência")
+    if len(bruto) < TAMANHO_MINIMO_EXE or bruto[:2] != b"MZ":
+        raise ValueError("não parece um executável do Windows")
+    if hashlib.sha256(bruto).hexdigest().lower() != sha256.strip().lower():
+        raise ValueError("sha256 do .exe não confere com o versao.json")
+    return True
+
+
+def _em_clone_git():
+    return not _rodando_compilado() and os.path.isdir(os.path.join(PASTA_SCRIPT, ".git"))
+
+
+def momento_seguro_para_atualizar():
+    """Sem alarme tocando, sem recuperação em andamento e com a página respondendo."""
+    if alarme_ativo or _PEDIDO_REINICIO_CHROME:
+        return False
+    if _ETAPA in ("aguardando_login", "parado"):
+        return True
+    return _ETAPA == "monitorando" and _ULTIMO_OK and (time.time() - _ULTIMO_OK) < 120
+
+
+def verificar_atualizacao(manual=False):
+    """Consulta o versao.json e, se houver versão nova, atualiza com segurança."""
+    global _ATUALIZACAO_ADIADA, _AVISOU_GIT
+    cfg = carregar_filtros()
+    if not manual and not cfg["auto_atualizar"]:
+        return "desligada"
+    if _em_clone_git():
+        if manual or not _AVISOU_GIT:
+            _AVISOU_GIT = True
+            log_msg("ℹ️ Esta pasta é um clone do git: a atualização automática não mexe nela (use git pull).")
+        return "git"
+    estado = _ler_estado_atualizacao()
+    if estado.get("status") == "em_teste" and estado.get("para") == VERSAO:
+        return "em_teste"
+
+    remoto = consultar_versao_remota()
+    nova = str(remoto.get("versao")).strip()
+    if _versao_tupla(nova) <= _versao_tupla(VERSAO):
+        if manual:
+            log_msg(f"✅ Já está na versão mais nova ({VERSAO}).")
+        return "atual"
+    if nova in (estado.get("bloqueadas") or []):
+        if manual:
+            log_msg(f"⛔ A versão {nova} já falhou aqui e foi revertida — ignorando.")
+        return "bloqueada"
+    if not momento_seguro_para_atualizar():
+        if not _ATUALIZACAO_ADIADA:
+            log_msg(f"⏸️ Versão {nova} disponível — aguardando um momento sem chamada em andamento.")
+        _ATUALIZACAO_ADIADA = True
+        return "adiada"
+    _ATUALIZACAO_ADIADA = False
+    aplicar_atualizacao(remoto, estado)
+    return "aplicada"
+
+
+def aplicar_atualizacao(remoto, estado_anterior=None):
+    nova = str(remoto.get("versao")).strip()
+    alvo = _caminho_programa_atual()
+    log_msg(f"⬇️ Baixando a versão {nova} (atual {VERSAO})...")
+    if alvo.lower().endswith(".exe"):
+        url = remoto.get("url_exe") or ""
+        if not url:
+            raise ValueError("versao.json sem url_exe")
+        bruto = _baixar(url, timeout=300)
+        validar_exe_baixado(bruto, remoto.get("sha256_exe") or "")
+    else:
+        arquivo = remoto.get("arquivo") or "SCRIPT_EXPLICA.py"
+        bruto = _baixar(_url_raw(arquivo), timeout=60)
+        validar_script_baixado(bruto, nova, remoto.get("sha256") or "")
+
+    novo = alvo + ".novo"
+    backup = alvo + ".anterior"
+    with open(novo, "wb") as arquivo_novo:
+        arquivo_novo.write(bruto)
+    if os.path.exists(backup):
+        os.remove(backup)
+    os.replace(alvo, backup)          # o .exe em uso pode ser renomeado
+    try:
+        os.replace(novo, alvo)
+    except Exception:
+        os.replace(backup, alvo)
+        raise
+
+    _gravar_estado_atualizacao({
+        "status": "em_teste",
+        "de": VERSAO,
+        "para": nova,
+        "arquivo": alvo,
+        "backup": backup,
+        "inicios": 0,
+        "instalada_em": datetime.datetime.now().isoformat(timespec="seconds"),
+        "notas": str(remoto.get("notas") or "")[:500],
+        "bloqueadas": (estado_anterior or {}).get("bloqueadas") or [],
+    })
+    log_msg(f"✅ Versão {nova} instalada (backup em {os.path.basename(backup)}). Reiniciando...")
+    reiniciar_processo(f"atualização {VERSAO} -> {nova}", ignorar_limite=True)
+
+
+def confirmar_atualizacao(motivo):
+    estado = _ler_estado_atualizacao()
+    if estado.get("status") != "em_teste" or estado.get("para") != VERSAO:
+        return
+    estado["status"] = "confirmada"
+    estado["confirmada_em"] = datetime.datetime.now().isoformat(timespec="seconds")
+    estado["motivo"] = motivo
+    _gravar_estado_atualizacao(estado)
+    log_msg(f"✅ Versão {VERSAO} confirmada ({motivo}). A anterior fica guardada como .anterior.")
+
+
+def _checar_confirmacao_por_tempo(agora):
+    """Confirma ou reverte a versão em teste quando o 1º ciclo OK não vem."""
+    if _PRIMEIRO_OK:
+        return
+    estado = _ler_estado_atualizacao()
+    if estado.get("status") != "em_teste" or estado.get("para") != VERSAO:
+        return
+    vivo_ha = agora - _INICIO_PROCESSO
+    sem_como_testar = _CRED_RECUSADAS or credenciais_incompletas() or _ETAPA == "offline"
+    if vivo_ha > 600 and sem_como_testar:
+        confirmar_atualizacao("programa estável há 10 min (sem login/internet para testar o Feegow)")
+    elif vivo_ha > 1200 and not sem_como_testar and internet_ok():
+        if _restaurar_versao_anterior(estado, "a versão nova não monitorou com sucesso em 20 min"):
+            log_msg(f"↩️ A versão {VERSAO} não conseguiu monitorar em 20 min — voltando para {estado.get('de')}.")
+            reiniciar_processo("rollback da atualização", ignorar_limite=True)
+
+
+def thread_atualizacao():
+    """Consulta o GitHub de tempos em tempos (padrão: 60 min)."""
+    _dormir(90)  # deixa o monitor subir primeiro
+    while not _ENCERRANDO:
+        try:
+            verificar_atualizacao()
+        except Exception as e:
+            log_msg(f"⚠️ Atualização: não consegui consultar/aplicar ({type(e).__name__}: {e}). "
+                    "Tento de novo mais tarde.")
+        if _ATUALIZACAO_ADIADA:
+            _dormir(120)
+        else:
+            _dormir(carregar_filtros()["atualizacao_intervalo_minutos"] * 60)
+
+
+def procurar_atualizacao_agora():
+    """Botão da janela ⚙️ (roda em thread separada)."""
+    def _tarefa():
+        try:
+            resultado = verificar_atualizacao(manual=True)
+            if resultado == "adiada":
+                log_msg("⏸️ A atualização será aplicada assim que não houver chamada em andamento.")
+        except Exception as e:
+            log_msg(f"⚠️ Atualização manual falhou: {type(e).__name__}: {e}")
+    threading.Thread(target=_tarefa, daemon=True).start()
+
 
 # ==============================================================================
 # SYSTEM TRAY (BANDEJA DO WINDOWS E ENCERRAMENTO LIMPO)
@@ -1771,6 +2844,15 @@ def encerrar_sistema():
     Usado pelo menu da bandeja e pelo Ctrl+C no console (antes o Ctrl+C
     estourava um traceback de KeyboardInterrupt e deixava o Chrome aberto).
     """
+    global _ENCERRANDO
+    _ENCERRANDO = True
+    _limpeza_para_sair()
+    _liberar_instancia_unica()
+    os._exit(0)
+
+
+def _limpeza_para_sair():
+    """Fecha bandeja e Chrome e deixa o perfil limpo (usado ao sair e ao reiniciar)."""
     try:
         if tray_icon is not None:
             tray_icon.stop()
@@ -1780,7 +2862,7 @@ def encerrar_sistema():
     try:
         if driver is not None:
             # driver.quit() pode travar se a thread do Selenium estiver no meio de uma chamada
-            fechador = threading.Thread(target=driver.quit, daemon=True)
+            fechador = threading.Thread(target=lambda: _ignorar_erro(driver.quit), daemon=True)
             fechador.start()
             fechador.join(timeout=5)
     except Exception:
@@ -1817,10 +2899,13 @@ def iniciar_tray():
         item('Mostrar / Ocultar Painel', on_tray_click, default=True),
         item('Mostrar Painel', on_tray_mostrar),
         item('Ocultar Painel', on_tray_ocultar),
+        item('Procurar atualização', lambda icon, it: procurar_atualizacao_agora()),
         pystray.Menu.SEPARATOR,
         item('Encerrar Sistema', on_tray_exit),
     )
-    tray_icon = pystray.Icon("Monitor_Feegow", criar_icone_imagem("blue"), "Monitor Feegow (MC)", menu)
+    nivel, texto = _STATUS
+    tray_icon = pystray.Icon("Monitor_Feegow", criar_icone_imagem(CORES_STATUS.get(nivel, "blue")),
+                             f"Monitor Feegow v{VERSAO} — {texto}", menu)
     tray_icon.run()
 
 # ==============================================================================
@@ -1854,7 +2939,7 @@ def abrir_configuracoes(aba="senhas"):
     global _JANELA_CONFIG, _ABAS_CONFIG
 
     def _selecionar():
-        indice = {"senhas": 0, "login": 1, "alertas": 2}.get(str(aba).lower(), 0)
+        indice = {"senhas": 0, "login": 1, "alertas": 2, "sistema": 3}.get(str(aba).lower(), 0)
         try:
             if _ABAS_CONFIG is not None:
                 _ABAS_CONFIG.select(indice)
@@ -2118,6 +3203,67 @@ def abrir_configuracoes(aba="senhas"):
     entrada_volume.insert(0, str(_para_int(filtros.get("volume_alarme"), 100, 0, 100)))
     entrada_volume.grid(row=4, column=1, padx=8)
 
+    tk.Label(form2, text="Saída da voz:", bg="#1e1e1e", fg="#e5e7eb",
+             font=("Consolas", 10)).grid(row=5, column=0, sticky="w", pady=4)
+    combo_saida = ttk.Combobox(form2, width=34, state="readonly",
+                               values=["padrao", "todos"] + list(DISPOSITIVOS_AUDIO))
+    combo_saida.set(str(filtros.get("saida_audio") or "padrao"))
+    combo_saida.grid(row=5, column=1, padx=8, sticky="w")
+
+    tk.Label(form2, text="Não repetir a mesma senha por (s):", bg="#1e1e1e", fg="#e5e7eb",
+             font=("Consolas", 10)).grid(row=6, column=0, sticky="w", pady=4)
+    entrada_antirep = tk.Entry(form2, width=8, bg="#111111", fg="#eeeeee",
+                               insertbackground="#eeeeee")
+    entrada_antirep.insert(0, str(_para_int(filtros.get("anti_repeticao_segundos"), 60, 0)))
+    entrada_antirep.grid(row=6, column=1, padx=8, sticky="w")
+
+    tk.Label(aba_alertas,
+             text="padrao = só a saída padrão do Windows (recomendado: a fala não sai duplicada)\n"
+                  "todos  = fala em cada dispositivo, um depois do outro (comportamento antigo)",
+             bg="#1e1e1e", fg="#6b7280", font=("Consolas", 9), justify=tk.LEFT
+             ).pack(anchor="w", padx=14, pady=(8, 0))
+
+    # ---------------- aba SISTEMA (watchdog + atualização) ----------------
+    aba_sistema = tk.Frame(abas, bg="#1e1e1e")
+    abas.add(aba_sistema, text="  Sistema  ")
+    _selecionar()
+
+    tk.Label(aba_sistema, text=f"Versão instalada: {VERSAO}   •   pasta: {PASTA_SCRIPT}",
+             bg="#1e1e1e", fg="#9ca3af", font=("Consolas", 9)).pack(anchor="w", padx=14, pady=(10, 4))
+
+    var_auto = tk.BooleanVar(value=_para_bool(filtros.get("auto_atualizar"), True))
+    tk.Checkbutton(aba_sistema, text="Atualizar sozinho pelo GitHub (versao.json)", variable=var_auto,
+                   bg="#1e1e1e", fg="#e5e7eb", selectcolor="#111111", activebackground="#1e1e1e",
+                   activeforeground="#e5e7eb", font=("Consolas", 10), anchor="w"
+                   ).pack(anchor="w", padx=14, pady=4)
+
+    form3 = tk.Frame(aba_sistema, bg="#1e1e1e")
+    form3.pack(anchor="w", padx=14, pady=(6, 0))
+    campos_sistema = {}
+    for linha, (chave, rotulo_campo, padrao_campo) in enumerate((
+        ("atualizacao_intervalo_minutos", "Procurar atualização a cada (min):", 60),
+        ("atualizacao_canal", "Canal (branch do GitHub):", "main"),
+        ("watchdog_limite_sem_batimento_segundos", "Watchdog: agir após (s) sem batimento:", 180),
+        ("watchdog_recarregar_pagina_minutos", "Recarregar a página a cada (min, 0 = nunca):", 30),
+        ("watchdog_reiniciar_chrome_horas", "Reabrir o Chrome a cada (h, 0 = nunca):", 0),
+        ("watchdog_max_reinicios_por_hora", "Máx. reinícios do Chrome por hora:", 6),
+    )):
+        tk.Label(form3, text=rotulo_campo, bg="#1e1e1e", fg="#e5e7eb",
+                 font=("Consolas", 10)).grid(row=linha, column=0, sticky="w", pady=4)
+        campo = tk.Entry(form3, width=14, bg="#111111", fg="#eeeeee", insertbackground="#eeeeee")
+        valor = filtros.get(chave)
+        campo.insert(0, str(padrao_campo if valor is None else valor))
+        campo.grid(row=linha, column=1, padx=8, sticky="w")
+        campos_sistema[chave] = (campo, padrao_campo)
+
+    linha_botoes = tk.Frame(aba_sistema, bg="#1e1e1e")
+    linha_botoes.pack(anchor="w", padx=14, pady=12)
+    tk.Button(linha_botoes, text="⬆️ Procurar atualização agora", command=procurar_atualizacao_agora,
+              bg="#1f3a5f", fg="white", relief=tk.FLAT, padx=10, pady=4).pack(side=tk.LEFT)
+    tk.Button(linha_botoes, text="📂 Abrir pasta de logs",
+              command=lambda: os.startfile(PASTA_LOGS) if os.path.isdir(PASTA_LOGS) else None,
+              bg="#374151", fg="white", relief=tk.FLAT, padx=10, pady=4).pack(side=tk.LEFT, padx=8)
+
     # ---------------- rodapé ----------------
     rodape = tk.Frame(janela, bg="#1e1e1e")
     rodape.pack(fill=tk.X, padx=10, pady=(0, 10))
@@ -2145,6 +3291,14 @@ def abrir_configuracoes(aba="senhas"):
             dados["alarme_max_segundos"] = _para_int(entrada_max.get(), 120, 0)
             dados["intervalo_repeticao_segundos"] = _para_int(entrada_repeticao.get(), 15, 1)
             dados["volume_alarme"] = _para_int(entrada_volume.get(), 100, 0, 100)
+            dados["saida_audio"] = combo_saida.get() or "padrao"
+            dados["anti_repeticao_segundos"] = _para_int(entrada_antirep.get(), 60, 0)
+            dados["auto_atualizar"] = bool(var_auto.get())
+            for chave, (campo, padrao_campo) in campos_sistema.items():
+                if isinstance(padrao_campo, int):
+                    dados[chave] = _para_int(campo.get(), padrao_campo, 0)
+                else:
+                    dados[chave] = campo.get().strip() or padrao_campo
             _sincronizar_termos_filtro(dados)
             _gravar_json(ARQ_FILTROS, dados)
 
@@ -2196,7 +3350,7 @@ def abrir_configuracoes(aba="senhas"):
 # INTERFACE GRÁFICA (TKINTER) E INICIALIZAÇÃO
 # ==============================================================================
 root = tk.Tk()
-root.title("Painel de Depuração - Monitor Feegow")
+root.title(f"Painel de Depuração - Monitor Feegow v{VERSAO}")
 root.geometry("800x650")
 root.configure(bg="#1e1e1e")
 root.withdraw()
@@ -2211,6 +3365,21 @@ tk.Button(
     activeforeground="white",
 ).pack(side=tk.LEFT)
 
+# Indicador discreto: conectado / reconectando / sem internet / falha
+rotulo_status = tk.Label(frame_topo, text="● Iniciando...", bg="#1e1e1e", fg=CORES_STATUS["iniciando"],
+                         font=("Consolas", 10, "bold"))
+rotulo_status.pack(side=tk.LEFT, padx=14)
+
+
+def _atualizar_rotulo_status():
+    try:
+        nivel, texto = _texto_status()
+        rotulo_status.configure(text=texto, fg=CORES_STATUS.get(nivel, "#9ca3af"))
+    except Exception:
+        pass
+    root.after(2000, _atualizar_rotulo_status)
+
+
 frame_logs = tk.Frame(root, bg="#1e1e1e")
 frame_logs.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 tk.Label(frame_logs, text="LOGS DE ATIVIDADE AVANÇADOS", bg="#1e1e1e", fg="#00ff00", font=("Consolas", 10, "bold")).pack(anchor="w")
@@ -2222,7 +3391,7 @@ frame_estudio.pack(fill=tk.X, padx=10, pady=5)
 entry_voz = tk.Entry(frame_estudio, font=("Consolas", 12), width=60)
 entry_voz.insert(0, "Atenção! Senha de dilatação.")
 entry_voz.pack(side=tk.LEFT, padx=10, pady=10, expand=True, fill=tk.X)
-tk.Button(frame_estudio, text="Testar Texto", bg="#ff9900", fg="black", font=("Consolas", 10, "bold"), command=lambda: threading.Thread(target=gerar_e_tocar_alerta_teste, args=(entry_voz.get(), "todos"), daemon=True).start()).pack(side=tk.RIGHT, padx=10)
+tk.Button(frame_estudio, text="Testar Texto", bg="#ff9900", fg="black", font=("Consolas", 10, "bold"), command=lambda: threading.Thread(target=gerar_e_tocar_alerta_teste, args=(entry_voz.get(), "configurado"), daemon=True).start()).pack(side=tk.RIGHT, padx=10)
 
 frame_audio = tk.LabelFrame(root, text="Testes de Hardware de Áudio", bg="#1e1e1e", fg="white", font=("Consolas", 10))
 frame_audio.pack(fill=tk.X, padx=10, pady=5)
@@ -2234,6 +3403,8 @@ for disp in DISPOSITIVOS_AUDIO:
     tk.Button(frame_linha, text="Testar", bg="#444444", fg="white", command=lambda d=disp: threading.Thread(target=gerar_e_tocar_alerta_teste, args=("Teste.", "unico", d), daemon=True).start()).pack(side=tk.RIGHT)
 
 if __name__ == "__main__":
+    log_msg(f"▶️ Monitor de Senha v{VERSAO} iniciando (pasta: {PASTA_SCRIPT}"
+            f"{', supervisionado' if _supervisionado() else ''}).")
     carregar_filtros(forcar=True)
     carregar_credenciais()
     preparar_audio_inicial()
@@ -2245,6 +3416,10 @@ if __name__ == "__main__":
         threading.Thread(target=iniciar_selenium, daemon=True).start()
 
     threading.Thread(target=iniciar_tray, daemon=True).start()
+    threading.Thread(target=thread_watchdog, name="watchdog", daemon=True).start()
+    threading.Thread(target=thread_atualizacao, name="atualizacao", daemon=True).start()
+    root.after(300, _drenar_fila_log)
+    root.after(1000, _atualizar_rotulo_status)
 
     try:
         root.mainloop()

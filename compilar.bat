@@ -39,7 +39,7 @@ python -m nuitka ^
   --nofollow-import-to=pygame.tests ^
   --company-name="Monitor Feegow" ^
   --product-name="Monitor de Senha Feegow" ^
-  --file-version=1.0.0.0 --product-version=1.0.0.0 ^
+  --file-version=2.0.0.0 --product-version=2.0.0.0 ^
   --output-filename="MonitorFeegow.exe" ^
   --output-dir=dist ^
   SCRIPT_EXPLICA.py

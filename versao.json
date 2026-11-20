@@ -1,0 +1,9 @@
+{
+  "versao": "2.0.0",
+  "arquivo": "SCRIPT_EXPLICA.py",
+  "sha256": "67144ee1bc1b75151c0d9cec4ddfe33a0e0aeb3bf02580648695e6d672f465ac",
+  "tamanho": 136497,
+  "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
+  "sha256_exe": "",
+  "notas": "v2.0.0: watchdog (auto-recuperacao em 3 niveis), atualizacao automatica, fala so na saida padrao, iniciar_monitor.pyw"
+}

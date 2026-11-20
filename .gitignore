@@ -18,3 +18,12 @@ dist/
 *.onefile-build/
 build_nuitka.log
 *.exe
+
+# Logs e estado local do monitor (cada PC tem os seus)
+logs/
+error_log.txt
+atualizacao_estado.json
+filtros.backup.json
+*.anterior
+*.novo
+*.falhou
