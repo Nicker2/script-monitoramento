@@ -55,7 +55,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.0.1"
+VERSAO = "2.1.0"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada

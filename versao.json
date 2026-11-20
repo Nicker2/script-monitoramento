@@ -1,9 +1,18 @@
 {
-  "versao": "2.0.1",
+  "versao": "2.1.0",
+  "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "a9d808b3c767b4803ff6b8d7ff587ff161a711a6d5fc89afa1e473b3e99019a5",
-  "tamanho": 138994,
+  "sha256": "01d4d088ded4d210d8cd30a2c0cd00adfce24273d480073a3d040ea1072b900b",
+  "tamanho": 194931,
+  "arquivos_extras": {
+    "iniciar_monitor.pyw": {
+      "sha256": "8d1a3967c5a4f66c96c6f89a8988af6953ba2c83445d141d3b39c98a1d4ddf7a",
+      "tamanho": 7144
+    }
+  },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "v2.0.1: corrige o reinicio (N3, pos-atualizacao e rollback) que fechava o monitor de vez; Reiniciar monitor na bandeja; hosts_verificacao_internet"
+  "notas": "v2.1.0: ciclo leve, Chrome com sandbox e reinicio diario, supervisor com heartbeat, versao.json assinado (Ed25519), senha em DPAPI, audio offline com cache, limite de relogins, diagnostico",
+  "chave": "17a321dda4aa1060",
+  "assinatura": "clHffwuaCbL/8cMv/0XLRx2x3b0fAwpy5s3MdY2WffQE1FkpNTCC3YCIOhmgLGXoNWdtCQ/SztjJcQfzW7skCA=="
 }

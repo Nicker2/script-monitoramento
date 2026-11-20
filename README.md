@@ -139,13 +139,13 @@ Criam/removem o atalho "Monitor de Senha Feegow" na pasta Inicializar do usuári
 
 ### **versao.json** e **ferramentas/gerar_versao.py**
 **Descrição**:
-`versao.json` diz qual é a versão publicada (com o sha256 do script e, opcionalmente, do `.exe`). As máquinas consultam esse arquivo para se atualizar. O `gerar_versao.py` monta o arquivo a partir do `VERSAO` do script — ver [Atualização automática](#atualização-automática).
+`versao.json` diz qual é a versão publicada (com o sha256 do script, do `iniciar_monitor.pyw` e, opcionalmente, do `.exe`) e vem **assinado com Ed25519**. As máquinas consultam esse arquivo para se atualizar e recusam qualquer `versao.json` sem assinatura válida. O `gerar_versao.py` monta e assina o arquivo a partir do `VERSAO` do script (fonte única da versão; o `compilar.bat` lê do mesmo lugar via `ferramentas/versao_atual.py`) — ver [Assinatura das versões](#assinatura-das-versões-como-publicar).
 
 ---
 
 ### **logs/**
 **Descrição**:
-`monitor.log` (tudo o que aparece no painel, com data e hora; 5 arquivos de 1 MB em rotação), `supervisor.log` e `watchdog_estado.json`. Não vai para o git.
+`monitor.log` (tudo o que aparece no painel, com data e hora; 5 arquivos de 1 MB em rotação; e-mails aparecem mascarados, ex. `fu***@clinica.com.br`), `supervisor.log`, `watchdog_estado.json`, `heartbeat.json` (o monitor grava a cada 15 s; o supervisor usa para saber se ele travou) e `status.json` (estado legível: etapa, último OK, relogins, RAM do Chrome, áudio...). Criar `logs/reiniciar.pedido` reinicia o monitor e `logs/encerrar.pedido` encerra (conferido a cada 15 s). Não vai para o git.
 
 ---
 
@@ -267,9 +267,9 @@ No painel (ícone da bandeja → Mostrar), o botão **`⚙️ Configurações`**
   | 🎫 **R2** | Alerta **só** `R2`. |
 
   O filtro anterior fica salvo em `filtros.backup.json` antes de cada troca.
-- **Login** — e-mail/usuário, senha (com opção "mostrar senha") e a rota (`auto` / `sso` / `legado`).
+- **Login** — e-mail/usuário, senha (com opção "mostrar senha") e a rota (`auto` / `sso` / `legado`). Salvar um login **diferente** reabre o navegador sozinho com ele. A senha é gravada protegida pelo Windows (DPAPI) — ver [Senha protegida](#senha-protegida-dpapi).
 - **Alertas** — liga/desliga a janela piscando e a voz, `pausa_minutos`, `intervalo_busca_segundos`, a **saída da voz** (`padrao`/`todos`/um dispositivo) e o anti-repetição.
-- **Sistema** — versão instalada, atualização automática (liga/desliga, intervalo, canal), limites do watchdog e os botões **Procurar atualização agora** e **Abrir pasta de logs**.
+- **Sistema** — versão instalada, atualização automática (liga/desliga, intervalo, canal), limites do watchdog, reinício diário e limite de RAM do Chrome, limite de relogins, heartbeat remoto (URL, intervalo, nome da máquina e token) e os botões **Procurar atualização agora**, **Abrir pasta de logs** e **📋 Copiar diagnóstico** (copia versão, estado, configuração sem segredos e as últimas linhas do log, com e-mails mascarados, para colar no suporte).
 
 O botão **💾 Salvar** grava direto em `filtros.json` e `credenciais.json` — **mesmo formato de antes** (`_comentario` e as chaves de URL são preservadas). Senhas e alertas passam a valer na hora.
 
@@ -278,7 +278,9 @@ O botão **💾 Salvar** grava direto em `filtros.json` e `credenciais.json` —
 ### 5. Bandeja do Windows
 
 - **Clique no ícone** → mostra/oculta o painel e o navegador.
-- **Botão direito → Encerrar Sistema** → fecha o Chrome, apaga o áudio temporário e sai.
+- **Botão direito → Reiniciar monitor** → reinicia o programa (o supervisor relança na hora).
+- **Botão direito → Encerrar Sistema** → fecha o Chrome e sai (o supervisor para junto).
+- Passe o mouse no ícone para ver o estado; quando não há como falar aparece **"Sem áudio"**.
 
 ### 6. Logs
 
@@ -335,12 +337,9 @@ Pastas que são um clone do git **não** são atualizadas (use `git pull`). Tamb
 | `atualizacao_intervalo_minutos` | `60` | Intervalo entre consultas (mínimo 10). |
 | `atualizacao_canal` | `"main"` | Branch consultada. Para testar uma branch numa máquina só, coloque o nome dela aqui. |
 
-**Para publicar uma versão nova:**
+Desde a 2.1.0 o cliente também exige: **assinatura Ed25519 válida** no `versao.json`, **sha256 obrigatório**, e só aceita os canais `main` e `beta` (outro nome no `filtros.json` cai na `main`, com aviso no log). O `iniciar_monitor.pyw` também é atualizado (conferido pelo sha256 do `versao.json` assinado) e passa a valer no próximo início do supervisor (ao entrar no Windows). Versão publicada sem `.exe` (`sha256_exe` vazio) simplesmente não mexe nos `.exe`, sem erro.
 
-1. Suba o `VERSAO = "x.y.z"` no topo do `SCRIPT_EXPLICA.py`.
-2. `python ferramentas/gerar_versao.py --notas "o que mudou"` (atualiza o `versao.json` com o sha256).
-3. Commit do `SCRIPT_EXPLICA.py` **junto** com o `versao.json` e push na `main`.
-4. Para quem usa o `.exe`: compile (`compilar.bat`), anexe o `MonitorFeegow.exe` na release e rode `python ferramentas/gerar_versao.py --exe dist\MonitorFeegow.exe` antes do commit. Sem `sha256_exe`, os `.exe` simplesmente não se atualizam.
+**Para publicar uma versão nova:** ver [Assinatura das versões](#assinatura-das-versões-como-publicar).
 
 ---
 
@@ -353,6 +352,55 @@ Antes, a fala tocava em **todos** os dispositivos de som, um depois do outro (al
 - Uma fala por vez (trava interna) e **um monitor por PC** (instância única): duas cópias abertas não falam ao mesmo tempo.
 
 ---
+
+## Opções novas da 2.1.0 (`filtros.json` / aba Sistema)
+
+| Chave | Padrão | O que faz |
+| :--- | :--- | :--- |
+| `ciclo_leve` | `true` | Cada ciclo é **um** JavaScript que clica em "Chamar senha", espera o modal (MutationObserver, no máx. ~3 s) e devolve os textos — ~0,3 s por ciclo em vez de até 8 s de polling. Se falhar 3 vezes seguidas, volta sozinho para o método antigo até reabrir o Chrome. `false` usa sempre o antigo. |
+| `chrome_reinicio_diario_hora` | `"03:00"` | Reabre o Chrome uma vez por dia nesse horário (só sem alarme e se o Chrome tiver mais de 1 h aberto). `""` desliga. |
+| `chrome_limite_ram_mb` | `1500` | Mede a memória da árvore chromedriver → Chrome a cada 5 min (psutil) e reabre se passar. `0` desliga. |
+| `chrome_bloquear_imagens` | `false` | Não carrega imagens (economiza memória). **Teste antes de ligar.** |
+| `horario_funcionamento` | desligado | `{"ativo": true, "inicio": "06:00", "fim": "20:00", "dias": ["seg","ter","qua","qui","sex","sab"]}`. Fora do horário o Chrome fica fechado e o monitor só espera. Aceita virada da meia-noite (ex. `22:00` → `06:00`). |
+| `max_relogins_por_hora` | `3` | Mais quedas de sessão que isso numa hora = para de relogar por 60 min (outro PC com o mesmo usuário?). |
+| `hosts_verificacao_internet` | `["app.feegow.com", "www.google.com"]` | Hosts usados para saber se há internet (`host` ou `host:porta`). |
+| `heartbeat_remoto_url` | `""` | Heartbeat para a VPS (desligado enquanto vazio; só `https://`). Ver [Heartbeat remoto](#heartbeat-remoto-opcional). |
+| `heartbeat_remoto_intervalo_minutos` | `5` | Intervalo do heartbeat remoto. |
+| `nome_maquina` | `""` | Nome enviado no heartbeat (vazio = nome do PC). |
+
+O Chrome agora abre **com a sandbox ligada** (sem `--no-sandbox`; só se não abrir de jeito nenhum ele tenta sem, como último recurso) e com `--disable-extensions`, `--disable-background-networking`, `--disable-component-update`, `--disable-sync`, `--mute-audio` e cache em disco de 50 MB.
+
+**Supervisor (`iniciar_monitor.pyw`):** além de relançar no código 75, confere o `logs/heartbeat.json` a cada 30 s. Se o heartbeat do monitor ficar parado por mais de 10 min (fora dos 5 min de inicialização e da volta da suspensão do PC), ele encerra o processo pelo PID (com os filhos) e relança. Versões antigas do monitor, que não gravam heartbeat, nunca são mortas por isso.
+
+**Janela do alarme:** o texto vem da senha real e da pausa configurada (nada fixo), **Enter / Espaço / Esc = CIENTE**, a janela puxa o foco e o tamanho acompanha o DPI e cabe na tela.
+
+## Senha protegida (DPAPI)
+
+A senha do Feegow não fica mais em texto no `credenciais.json`: ela é gravada em `senha_protegida` (`dpapi:...`), cifrada pelo Windows para **o usuário atual daquele PC**. Máquinas que tinham `"senha"` em texto são migradas sozinhas no primeiro login depois da atualização (a migração espera a versão nova ser confirmada, para que um rollback automático ainda consiga entrar). Se copiar o `credenciais.json` para outro PC/usuário, a senha precisa ser digitada de novo. O token do heartbeat remoto também fica protegido assim.
+
+## Assinatura das versões (como publicar)
+
+O `versao.json` é assinado com uma chave **Ed25519**. A chave **pública** está embutida no `SCRIPT_EXPLICA.py` (`CHAVE_PUBLICA_RELEASE`); a chave **privada** fica **fora do repositório**, em `..\chaves\monitor_release_ed25519.pem` (pasta ao lado do clone; `*.pem` e `chaves/` estão no `.gitignore`). **Guarde uma cópia de segurança da chave privada**: sem ela não dá para publicar versões que as máquinas aceitem.
+
+1. Suba o `VERSAO = "x.y.z"` no topo do `SCRIPT_EXPLICA.py` (é a única fonte da versão).
+2. `python ferramentas/gerar_versao.py --notas "o que mudou"` — calcula os sha256 (em LF, como o GitHub serve), inclui o `iniciar_monitor.pyw` e assina. Precisa do pacote `cryptography` na máquina de quem publica (`pip install cryptography`). Outra chave: `--chave caminho.pem` ou variável `MONITOR_CHAVE_RELEASE`. Canal beta: `--canal beta`.
+3. Commit do `SCRIPT_EXPLICA.py` + `versao.json` (+ `iniciar_monitor.pyw`) **juntos**.
+4. `python ferramentas/gerar_versao.py --verificar --git-ref HEAD` — confere sha256, versão e assinatura contra o que foi commitado (com `core.autocrlf=true` o disco tem CRLF, mas o blob é LF). Depois, push.
+5. Para quem usa o `.exe`: compile (`compilar.bat`, que lê a versão do script), anexe o `MonitorFeegow.exe` na release e rode o passo 2 com `--exe dist\MonitorFeegow.exe`.
+
+As máquinas conferem a assinatura com o pacote `cryptography` se ele existir e, senão (ex.: `.exe`), com uma verificação Ed25519 em Python puro embutida no script — nunca ficam sem verificar.
+
+## Heartbeat remoto (opcional)
+
+Desligado por padrão. Com `heartbeat_remoto_url` preenchida (só `https://`), cada monitor faz `POST` JSON a cada `heartbeat_remoto_intervalo_minutos` com: `maquina`, `versao`, `status`, `texto`, `etapa`, `ultimo_ok_ha_s`, `rodando_ha_s`, `alarme_ativo`, `sem_audio`, `relogins_ultima_hora`, `relogin_bloqueado`, `reinicios_chrome_ultima_hora`, `chrome_ram_mb` etc. (sem senha e sem e-mail). O token vai no cabeçalho `Authorization: Bearer <token>` e é salvo pela aba Sistema (protegido por DPAPI).
+
+**O que falta no servidor (não incluído aqui):** um endpoint HTTPS que receba esse POST, confira o token, guarde o último heartbeat por `maquina` e uma tarefa periódica que avise no Telegram quando uma máquina ficar sem heartbeat por X minutos (ou chegar com `status` `falha`/`sem_audio`/`relogin_bloqueado`), com aviso de volta ao normal.
+
+## Testes
+
+- `python -m pytest tests` — unidade (filtros, horário, reinício diário, textos do alarme, assinatura com vetores do RFC 8032, DPAPI, heartbeat, reinício que não sai com código 0), conferência do `versao.json` e o supervisor de verdade com um monitor falso (código 75, queda, heartbeat parado).
+- `MONITOR_TESTES_CHROME=1 python -m pytest tests -k harness -s` (ou `python tests/harness/teste_monitor.py`) — bateria completa com Chrome headless e um **Feegow simulado local** (127.0.0.1, nunca o Feegow real), incluindo supervisor + monitor reais reiniciando e voltando a monitorar.
+- O GitHub Actions (`.github/workflows/ci.yml`, `windows-latest`) roda `py_compile`, `gerar_versao.py --verificar` e o `pytest` a cada push.
 
 ## Compilando um `.exe` (Nuitka)
 
@@ -427,12 +475,14 @@ Na primeira execução ele cria os dois sozinhos e abre a caixa pedindo login/se
 | A voz sai duas ou três vezes | Era a fala tocando em cada dispositivo. Agora `saida_audio` = `padrao`. Se ainda duplicar, confira se não há dois monitores (o segundo agora fecha sozinho) ou se o Windows está com "Ouvir este dispositivo" ligado. |
 | Não atualizou sozinho | Veja `logs/monitor.log` (`Atualização:`). Pasta com `.git` não se atualiza; `.exe` só atualiza se o `versao.json` tiver `sha256_exe`. |
 | Atualizou e voltou para a versão antiga | A versão nova não conseguiu monitorar e foi revertida (ver `atualizacao_estado.json`, campo `motivo`). |
-| O alarme não toca | Falta internet (o gTTS gera o áudio na hora). O log mostra "Falha ao gerar áudio de emergência". O alarme visual continua piscando. |
+| O alarme não toca | Desde a 2.1.0 as falas ficam em cache permanente (`%LOCALAPPDATA%\MonitorFeegow\audio`) e, sem internet, a voz do Windows (SAPI pt-BR) gera a fala; sem nada disso, toca bipe. O log mostra uma linha `🔈 Áudio: ...` por tipo de falha e a bandeja mostra "Sem áudio". |
+| Parou de relogar com "outro PC usando o mesmo usuário?" | A sessão caiu mais de 3 vezes em uma hora (`max_relogins_por_hora`). O monitor para de relogar por 60 min para não ficar derrubando a outra máquina. Salvar o login na janela ⚙️ tenta de novo na hora. |
+| "Não consegui abrir a senha protegida" | O `credenciais.json` veio de outro usuário/PC (a proteção DPAPI só abre no mesmo usuário do Windows). Digite a senha de novo na aba Login. |
 | Toca em um dispositivo só | Confira em "Testes de Hardware de Áudio" no painel se todos os dispositivos listados respondem ao "Testar". |
 | Uma chamada real está sendo ignorada | Alguma palavra da `blacklist` está no texto do botão. Veja no log a linha `🔎 Botão '...' -> blacklist ('...')` e ajuste o `filtros.json`. |
 | Uma chamada de outro tipo está disparando | Acrescente a palavra à `blacklist` (ou use `"comparacao": "exata"`). |
 | O login não passa | Confira `usuario`/`senha` no `credenciais.json`. O log avisa se ainda está com os dados de exemplo. |
-| "Usuário já conectado em outra máquina" | É esperado: o script cai no bypass invisível automaticamente e assume a sessão. |
+| "Usuário já conectado em outra máquina" | É esperado: o script tenta assumir a sessão (até 120 tentativas, espera de 1 s crescendo até 10 s; desiste em 5 min e manda o JavaScript parar). |
 | O programa não acha o Chrome | Feche as janelas do Chrome abertas pelo Selenium e reinicie (o rastreamento é por PID). |
 | `Chrome failed to start: crashed (DevToolsActivePort file doesn't exist)` | Um Chrome órfão de execução anterior estava travando o perfil fixo. O script agora encerra esses processos no arranque (`🧹 Encerrei N processo(s) de Chrome antigos`) e, se ainda falhar, abre com perfil temporário. |
 | Clique no ícone da bandeja não responde / pisca | Corrigido: o clique agora é agendado para a thread do Tk (antes mexia na janela direto da thread do pystray, o que travava), o estado vem do `root.state()` em vez de um flag, há trava de 400 ms contra clique duplo e o menu ganhou **Mostrar Painel** / **Ocultar Painel** separados. |
@@ -478,6 +528,20 @@ Regras de segurança:
 ---
 
 ## Histórico de Alterações
+
+### v2.1.0 — mais leve, mais seguro e mais fácil de diagnosticar
+
+- **Ciclo leve:** clique + leitura do modal num único `execute_async_script` com MutationObserver (~0,3 s por ciclo); o método antigo continua como reserva.
+- **Chrome:** sandbox ligada (sem `--no-sandbox`), flags para PC fraco, reinício diário (03:00) e limite de RAM; chromedriver guardado por PID e morto por PID como reserva; horário de funcionamento opcional.
+- **Supervisor:** mata e relança o monitor congelado (heartbeat parado > 10 min); o próprio `iniciar_monitor.pyw` passa a ser atualizado (conferido pela assinatura).
+- **Login:** limite de relogins por hora (avisa "outro PC usando o mesmo usuário?"), bypass com limite de tentativas e espera crescente, usuário/senha passados como argumentos do JavaScript, troca de login reabre o Chrome sozinha.
+- **Segurança:** `versao.json` assinado (Ed25519) e sha256 obrigatório; canais só `main`/`beta`; senha e token protegidos por DPAPI (migração automática); e-mail mascarado no log.
+- **Áudio:** cache permanente das falas, voz do Windows (SAPI pt-BR) sem internet, bipe como último recurso, gTTS com tempo limite e fora da thread principal, `pygame.mixer` em vez de `pygame.init`, falha registrada uma vez por tipo e "Sem áudio" na bandeja.
+- **Alarme:** textos da janela e da voz vêm da senha real e da pausa configurada; Enter/Espaço/Esc = CIENTE; foco, DPI e tamanho ajustados à tela.
+- **Robustez:** JSON gravado de forma atômica; estado do alarme com trava; a interface só é mexida pela thread do Tk (fila); log das senhas só quando o conjunto muda; versão sem `.exe` não gera erro.
+- **Diagnóstico:** `logs/status.json`, botão **Copiar diagnóstico**, heartbeat remoto opcional (desligado).
+- **Scripts:** `.bat`/`.ps1` sem caminho fixo `D:\...` (WinPython na pasta/acima, `py` launcher ou PATH); versão em fonte única (`compilar.bat` lê do script).
+- **Testes:** `tests/` com pytest + CI no GitHub Actions.
 
 ### v2.0.1 — correção urgente do reinício
 
