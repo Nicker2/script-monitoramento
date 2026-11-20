@@ -5,6 +5,8 @@ Duplo clique (roda com pythonw.exe, sem janela de console). Ele:
   * relança na hora quando o monitor pede reinício (watchdog / atualização: código 75);
   * relança com espera crescente se o monitor cair (5 s, 10 s, 20 s ... até 5 min);
   * para quando o usuário escolhe "Encerrar Sistema" (código 0);
+  * mata e relança o monitor se ele congelar: o monitor grava logs/heartbeat.json
+    a cada 15 s; parado há mais de 10 min (fora da inicialização) = travado;
   * grava tudo em logs/supervisor.log (com rotação) e não roda duas vezes.
 
 A atualização pelo GitHub, o watchdog do navegador e o log do monitor ficam
@@ -13,6 +15,7 @@ dentro do próprio SCRIPT_EXPLICA.py. Uso com console (para depurar):
 """
 import ctypes
 import datetime
+import json
 import os
 import subprocess
 import sys
@@ -24,10 +27,17 @@ EXE = os.path.join(PASTA, "MonitorFeegow.exe")
 PASTA_LOGS = os.path.join(PASTA, "logs")
 LOG = os.path.join(PASTA_LOGS, "supervisor.log")
 
+HEARTBEAT = os.path.join(PASTA_LOGS, "heartbeat.json")
+
 CODIGO_REINICIAR = 75
 CODIGO_OUTRA_INSTANCIA = 3
+CODIGO_MORTO_POR_HEARTBEAT = -9
 NOME_MUTEX = "Local\\MonitorFeegowSupervisor"
 ESPERA_MAXIMA = 300
+# (as variáveis MONITOR_SUP_* existem só para os testes automáticos encurtarem os tempos)
+LIMITE_HEARTBEAT = int(os.environ.get("MONITOR_SUP_LIMITE_HEARTBEAT") or 600)   # s sem heartbeat = travado
+FOLGA_INICIALIZACAO = int(os.environ.get("MONITOR_SUP_FOLGA") or 300)   # s após abrir/voltar da suspensão
+INTERVALO_CONFERENCIA = int(os.environ.get("MONITOR_SUP_INTERVALO") or 30)   # s entre conferências
 _MUTEX = None
 
 
@@ -74,6 +84,58 @@ def comando_monitor(com_console):
     return None
 
 
+def heartbeat_parado(pid, folga_ate, agora=None):
+    """True quando o heartbeat DESTE processo está parado há mais de LIMITE_HEARTBEAT.
+
+    Sem heartbeat deste PID (versão antiga do monitor, que não grava, ou ainda
+    abrindo) nunca conta como travado."""
+    agora = agora or time.time()
+    if agora < folga_ate:
+        return False
+    try:
+        with open(HEARTBEAT, "r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+        if int(dados.get("pid") or 0) != int(pid):
+            return False
+        return agora - float(dados.get("ts") or 0) > LIMITE_HEARTBEAT
+    except Exception:
+        return False
+
+
+def matar_arvore(pid):
+    """Mata o monitor travado e os filhos dele (chromedriver/Chrome) pelo PID."""
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                       timeout=30, creationflags=0x08000000)
+    except Exception as e:
+        log(f"taskkill falhou: {e}")
+
+
+def esperar_monitor(processo, inicio):
+    """Espera o monitor sair, conferindo o heartbeat. Devolve o código de saída."""
+    folga_ate = inicio + FOLGA_INICIALIZACAO
+    ultima_volta = time.time()
+    while True:
+        try:
+            return processo.wait(timeout=INTERVALO_CONFERENCIA)
+        except subprocess.TimeoutExpired:
+            pass
+        agora = time.time()
+        if agora - ultima_volta > INTERVALO_CONFERENCIA * 4:
+            # o relógio pulou: PC suspenso/hibernado. Dá a folga de novo.
+            folga_ate = agora + FOLGA_INICIALIZACAO
+        ultima_volta = agora
+        if heartbeat_parado(processo.pid, folga_ate, agora):
+            log(f"O monitor (PID {processo.pid}) está sem heartbeat há mais de {LIMITE_HEARTBEAT}s "
+                "— parece travado. Encerrando o processo e relançando.")
+            matar_arvore(processo.pid)
+            try:
+                processo.wait(timeout=30)
+            except Exception:
+                pass
+            return CODIGO_MORTO_POR_HEARTBEAT
+
+
 def main():
     com_console = "--console" in sys.argv
     if not instancia_unica():
@@ -92,7 +154,7 @@ def main():
         try:
             flags = 0 if com_console else 0x08000000  # CREATE_NO_WINDOW
             processo = subprocess.Popen(comando, cwd=PASTA, env=ambiente, creationflags=flags)
-            codigo = processo.wait()
+            codigo = esperar_monitor(processo, inicio)
         except KeyboardInterrupt:
             log("Ctrl+C — encerrando o supervisor.")
             return 0
