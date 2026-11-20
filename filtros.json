@@ -48,5 +48,14 @@
   "alerta_voz": true,
   "alarme_max_segundos": 120,
   "intervalo_repeticao_segundos": 15,
-  "volume_alarme": 100
+  "volume_alarme": 100,
+  "saida_audio": "padrao",
+  "anti_repeticao_segundos": 60,
+  "watchdog_limite_sem_batimento_segundos": 180,
+  "watchdog_recarregar_pagina_minutos": 30,
+  "watchdog_reiniciar_chrome_horas": 0,
+  "watchdog_max_reinicios_por_hora": 6,
+  "auto_atualizar": true,
+  "atualizacao_intervalo_minutos": 60,
+  "atualizacao_canal": "main"
 }
