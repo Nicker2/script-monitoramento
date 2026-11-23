@@ -56,7 +56,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.3.2"
+VERSAO = "2.3.3"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -684,8 +684,11 @@ FILTROS_PADRAO = {
     "recuperacao_janela_falhas_min": 10,       # ...dentro desta janela = reinicia o programa
     "recuperacao_min_sem_ok": 3,               # monitorando sem nenhum ciclo OK há X min = reinicia
     "recuperacao_min_sem_ok_total": 10,        # em qualquer etapa (abrir/login) sem ciclo OK há X min = reinicia
-    "recuperacao_max_reinicios_por_hora": 5,   # proteção contra laço de reinício...
-    "recuperacao_espera_limite_min": 10,       # ...passou do limite: espera isto e tenta de novo
+    # (2.3.3) sem teto de reinícios por hora: só um intervalo mínimo de 30 s entre um
+    # reinício do programa e o próximo (REINICIO_INTERVALO_MINIMO_SEGUNDOS)
+    # cronômetro de login (2.3.3): do início de qualquer tentativa de login até o login OK
+    # (token no modo requisição / página logada no modo Chrome). Passou disso = reinicia o programa.
+    "login_timeout_seg": 120,
     # reinício programado do programa inteiro (Chrome + processo), em minutos (0 = desligado)
     "reiniciar_a_cada_min": 60,
     # atualização automática pelo GitHub (versao.json)
@@ -818,6 +821,9 @@ _MARCO_ETAPA = time.time()       # quando a etapa atual começou
 _MARCO_ATIVO = time.time()       # quando saiu da última etapa "pausada" (offline, fora do horário...)
 _FALHAS_CHROME = []              # reaberturas do Chrome desde o último ciclo OK
 _AVISO_RECUPERACAO = ""          # último aviso de recuperação logado (loga só quando muda)
+# cronômetro de login (2.3.3)
+_LOGIN_INICIO = 0.0              # início da tentativa de login em andamento (0 = nenhuma)
+_AVISO_CRONOMETRO = ""           # último aviso do cronômetro logado (loga só quando muda)
 
 
 def normalizar_texto(texto):
@@ -1141,10 +1147,7 @@ def carregar_filtros(forcar=False):
             "recuperacao_min_sem_ok": _para_int(combinado.get("recuperacao_min_sem_ok"), 3, 1, 240),
             "recuperacao_min_sem_ok_total": _para_int(
                 combinado.get("recuperacao_min_sem_ok_total"), 10, 3, 480),
-            "recuperacao_max_reinicios_por_hora": _para_int(
-                combinado.get("recuperacao_max_reinicios_por_hora"), 5, 1, 60),
-            "recuperacao_espera_limite_min": _para_int(
-                combinado.get("recuperacao_espera_limite_min"), 10, 1, 240),
+            "login_timeout_seg": _para_int(combinado.get("login_timeout_seg"), 120, 30, 3600),
             "reiniciar_a_cada_min": _minutos_reinicio_programado(combinado.get("reiniciar_a_cada_min")),
             "auto_atualizar": _para_bool(combinado.get("auto_atualizar"), True),
             "atualizacao_intervalo_minutos": _para_int(
@@ -3202,9 +3205,11 @@ def fazer_login():
     url_legado = cred["url_login"]
 
     if not usuario or usuario.lower() == CREDENCIAIS_PADRAO["usuario"] or not senha:
+        parar_cronometro_login()   # dados de exemplo: reiniciar não adianta (2.3.3)
         log_msg("🛑 credenciais.json ainda está com os dados de exemplo. Corrija antes de continuar.")
         solicitar_credenciais("primeira_vez")
         return False
+    iniciar_cronometro_login()     # 2.3.3: o watchdog reinicia o programa se passar de login_timeout_seg
 
     if rota in ("sso", "nova", "novo"):
         rotas = [("SSO", login_sso, url_sso)]
@@ -3227,6 +3232,9 @@ def fazer_login():
                 ok, motivo = False, f"erro inesperado: {e}"
             if ok:
                 log_msg(f"✔️ Login OK pela rota {nome_rota} ({motivo}).")
+                if not _modo_http_em_uso():
+                    parar_cronometro_login()   # modo Chrome: página logada = login OK
+                # modo requisição: o cronômetro só para quando o token chega
                 return True
             log_msg(f"⚠️ Rota {nome_rota} falhou: {motivo}")
             if ("credenciais" in motivo or "senha incorreta" in motivo
@@ -3234,6 +3242,7 @@ def fazer_login():
                 log_msg("🛑 Credenciais recusadas pelo Feegow. Confira usuario/senha no credenciais.json — "
                         "parando para não travar a conta.")
                 _CRED_RECUSADAS = True
+                parar_cronometro_login()   # senha errada: reiniciar não adianta
                 solicitar_credenciais("recusadas")
                 return False
             if _erro_chrome_morto(motivo):
@@ -3892,7 +3901,16 @@ def fechar_chrome_modo_requisicao():
 
 def obter_token_via_chrome(evitar=""):
     """Abre o Chrome (se preciso), reaproveita a sessão ou faz o login e lê o token.
-    Fecha o Chrome no fim, a não ser que o painel esteja visível. "" = falhou."""
+    Fecha o Chrome no fim, a não ser que o painel esteja visível. "" = falhou.
+    O cronômetro de login (2.3.3) começa aqui e só para quando o token chega."""
+    iniciar_cronometro_login()
+    token = _obter_token_via_chrome(evitar)
+    if token:
+        parar_cronometro_login()
+    return token
+
+
+def _obter_token_via_chrome(evitar=""):
     url_lista = carregar_credenciais()["url_lista_espera"]
     try:
         if driver is None or not chrome_vivo(ping=False)[0]:
@@ -3959,7 +3977,8 @@ def _sincronizar_chrome_painel(token):
 
 
 def _reiniciar_pela_escada(motivo):
-    """N3 pelo mesmo caminho da 2.2.2 (reiniciar_processo: limite por hora).
+    """N3 pelo mesmo caminho da 2.2.2 (reiniciar_processo; desde a 2.3.3 sem teto por hora,
+    só o intervalo mínimo de 30 s).
     Nunca com alarme/voz e nunca sem internet. True = reiniciou."""
     if _ENCERRANDO:
         return False
@@ -4018,7 +4037,9 @@ def sessao_modo_requisicao():
         token = ler_token_driver()
     except Exception as erro:
         log_msg(f"⚠️ Modo requisição: falha ao ler o token depois do login ({type(erro).__name__}).")
-    if not token:
+    if token:
+        parar_cronometro_login()   # modo requisição: token obtido = login OK
+    else:
         log_msg("⚠️ Modo requisição: o token (sessionStorage 'tk') não apareceu depois do login — vou relogar.")
     return laco_http(token)
 
@@ -4507,25 +4528,113 @@ def _checar_reinicio_por_falha(agora):
         _avisar_recuperacao("📴 [N3] Falhando, mas sem internet — não reinicio (espero a conexão voltar).",
                             "offline", "Sem internet — aguardando")
         return False
-    bloqueado_ate = _reinicio_bloqueado_ate()
-    if bloqueado_ate > agora:
-        hora = datetime.datetime.fromtimestamp(bloqueado_ate).strftime("%H:%M")
-        maximo = cfg["recuperacao_max_reinicios_por_hora"]
+    if _reinicio_bloqueado_ate(agora) > agora:
         _avisar_recuperacao(
-            f"🚧 [N3] {motivo}, mas o programa já reiniciou {maximo} vezes na última hora. "
-            f"Próxima tentativa de reinício às {hora} (o Chrome continua sendo reaberto até lá).",
-            "falha", f"Falhas repetidas — novo reinício às {hora}",
-            f"O monitor de senhas está falhando e já reiniciou {maximo} vezes nesta hora. "
-            f"Nova tentativa às {hora}.")
+            f"⏳ [N3] {motivo}, mas o último reinício foi há menos de "
+            f"{REINICIO_INTERVALO_MINIMO_SEGUNDOS} s — reinicio assim que der.")
         return False
     _AVISO_RECUPERACAO = ""
     log_msg(f"🪜 [N3] Escada de recuperação: {motivo}. Reiniciando o programa inteiro.")
     return reiniciar_processo(motivo)
 
 
+# --- Cronômetro de login (2.3.3) ---------------------------------------------------
+# Do início de QUALQUER tentativa de login (fazer_login / relogin do modo requisição)
+# até o login OK (token obtido no modo requisição, página logada no modo Chrome, ou
+# qualquer ciclo OK). A thread do watchdog confere de fora (vale com o Chrome travado):
+# passou de login_timeout_seg = reinicia o programa pelo caminho do "Reiniciar monitor".
+def _modo_http_em_uso():
+    return carregar_filtros().get("modo_busca") == "http" and not _HTTP["desligado"]
+
+
+def iniciar_cronometro_login(agora=None):
+    """Marca o início da tentativa de login. Se já está correndo, não zera (retentativas,
+    reabertura do Chrome e relogins seguidos contam no mesmo cronômetro)."""
+    global _LOGIN_INICIO
+    if not _LOGIN_INICIO:
+        _LOGIN_INICIO = agora or time.time()
+
+
+def parar_cronometro_login():
+    global _LOGIN_INICIO, _AVISO_CRONOMETRO
+    _LOGIN_INICIO = 0.0
+    _AVISO_CRONOMETRO = ""
+
+
+def _recomecar_cronometro_login():
+    """Volta da internet: se havia login em andamento, o cronômetro recomeça do zero."""
+    global _LOGIN_INICIO
+    if _LOGIN_INICIO:
+        _LOGIN_INICIO = time.time()
+
+
+def _texto_duracao(segundos):
+    segundos = int(segundos)
+    return f"{segundos // 60} min" if segundos % 60 == 0 else f"{segundos} s"
+
+
+def decidir_cronometro_login(cfg, agora, inicio, etapa, alarme=False, falando=False,
+                             cred_invalidas=False):
+    """("nao", "") | ("avisar", texto) | ("adiar", texto) | ("reiniciar", motivo)."""
+    limite = cfg.get("login_timeout_seg") or 120
+    if not inicio or agora - inicio <= limite:
+        return "nao", ""
+    if etapa in ETAPAS_PAUSADAS:
+        return "nao", ""
+    if cred_invalidas:
+        return "avisar", ("⏱️ Login demorou mais de " + _texto_duracao(limite) + ", mas o login do "
+                          "Feegow está vazio/de exemplo ou foi recusado — reiniciar não adianta. "
+                          "Salve o login na janela ⚙️ (aba Login).")
+    if alarme:
+        return "adiar", "⏳ Login demorou mais de " + _texto_duracao(limite) + ": reinício adiado — esperando o alarme terminar."
+    if falando:
+        return "adiar", "⏳ Login demorou mais de " + _texto_duracao(limite) + ": reinício adiado — esperando a fala terminar."
+    return "reiniciar", f"login demorou mais de {_texto_duracao(limite)} ({int(agora - inicio)} s)"
+
+
+def _avisar_cronometro(texto, nivel=None, status=""):
+    global _AVISO_CRONOMETRO
+    if _AVISO_CRONOMETRO == texto:
+        return
+    _AVISO_CRONOMETRO = texto
+    log_msg(texto)
+    if nivel:
+        _atualizar_status(nivel, status)
+
+
+def _checar_cronometro_login(agora):
+    """Chamado pelo watchdog (outra thread) a cada 15 s. True = reiniciou."""
+    if _ENCERRANDO or not _LOGIN_INICIO:
+        return False
+    cfg = carregar_filtros()
+    acao, texto = decidir_cronometro_login(
+        cfg, agora, _LOGIN_INICIO, _ETAPA, alarme=bool(alarme_ativo), falando=_TRAVA_AUDIO.locked(),
+        cred_invalidas=bool(_CRED_RECUSADAS or credenciais_incompletas()))
+    if acao == "nao":
+        return False
+    if acao == "avisar":
+        _avisar_cronometro(texto, "falha", "Login recusado — confira as credenciais")
+        return False
+    if acao == "adiar":
+        _avisar_cronometro(texto)
+        return False
+    if not internet_ok():
+        _recomecar_cronometro_login()   # o tempo sem internet não conta
+        _avisar_cronometro("📴 Login demorado, mas sem internet — não reinicio (espero a conexão voltar).",
+                           "offline", "Sem internet — aguardando")
+        return False
+    limite = cfg.get("login_timeout_seg") or 120
+    log_msg(f"⏱️ Login demorou mais de {_texto_duracao(limite)}: reiniciando o programa")
+    if reiniciar_processo(texto):
+        return True
+    return False
+
+
 def _definir_etapa(etapa):
     global _ETAPA, _ULTIMO_PROGRESSO, _MARCO_ETAPA, _MARCO_ATIVO
     agora = time.time()
+    if etapa in ("aguardando_login", "fora_horario", "parado"):
+        parar_cronometro_login()   # nenhum login andando (credenciais/horário/parado)
     if etapa != _ETAPA:
         _MARCO_ETAPA = agora
         if _ETAPA in ETAPAS_PAUSADAS and etapa not in ETAPAS_PAUSADAS:
@@ -4541,6 +4650,8 @@ def registrar_batimento(ok=True):
     _ULTIMO_PROGRESSO = agora
     if ok:
         _ULTIMO_OK = agora
+        if _LOGIN_INICIO:
+            parar_cronometro_login()   # ciclo OK: está logado (rede de segurança do cronômetro)
         if _FALHAS_CHROME:
             log_msg(f"🪜 Ciclo OK depois de {len(_FALHAS_CHROME)} reabertura(s) do Chrome — escada zerada.")
             _FALHAS_CHROME.clear()
@@ -4589,6 +4700,7 @@ def aguardar_internet():
         _dormir(10, progresso=True)
     minutos = int((time.time() - _OFFLINE_DESDE) / 60)
     _OFFLINE_DESDE = 0.0
+    _recomecar_cronometro_login()   # o tempo sem internet não conta para o cronômetro de login
     log_msg(f"📶 Internet de volta (fora por ~{minutos} min). Retomando.")
     _definir_etapa(etapa_anterior if etapa_anterior != "offline" else "monitorando")
 
@@ -4619,37 +4731,43 @@ def _ler_estado_watchdog():
         return {}
 
 
-def _reinicio_bloqueado_ate():
-    """Até quando os reinícios por falha estão segurados (0 = liberado)."""
-    try:
-        return float(_ler_estado_watchdog().get("reinicio_bloqueado_ate") or 0)
-    except Exception:
-        return 0.0
+REINICIO_INTERVALO_MINIMO_SEGUNDOS = 30   # (2.3.3) único freio: 30 s entre um reinício e o próximo
 
 
-def _pode_reiniciar_processo(maximo_por_hora=None, espera_segundos=None, agora=None):
-    """Limite persistente (sobrevive ao reinício) para não entrar em laço de reinício.
-
-    Até `maximo_por_hora` reinícios por hora. Passou disso: segura por
-    `espera_segundos` (padrão 10 min) e então libera UMA nova tentativa;
-    se ainda estiver no limite, segura mais 10 min, e assim por diante."""
-    cfg = carregar_filtros()
-    maximo = maximo_por_hora or cfg.get("recuperacao_max_reinicios_por_hora", 5)
-    espera = espera_segundos if espera_segundos is not None else cfg.get("recuperacao_espera_limite_min", 10) * 60
+def _ultimo_reinicio_processo(agora=None):
+    """Horário do último reinício do programa (gravado em disco, vale entre processos)."""
     agora = agora or time.time()
+    try:
+        lista = [float(t) for t in (_ler_estado_watchdog().get("reinicios_processo") or [])]
+    except Exception:
+        lista = []
+    lista = [t for t in lista if t <= agora + 5]   # relógio voltou: ignora horários "do futuro"
+    return max(lista) if lista else 0.0
+
+
+def _reinicio_bloqueado_ate(agora=None):
+    """Até quando o próximo reinício espera o intervalo mínimo (0 = liberado)."""
+    agora = agora or time.time()
+    ultimo = _ultimo_reinicio_processo(agora)
+    ate = ultimo + REINICIO_INTERVALO_MINIMO_SEGUNDOS if ultimo else 0.0
+    return ate if ate > agora else 0.0
+
+
+def _pode_reiniciar_processo(agora=None):
+    """Desde a 2.3.3 não há teto por hora (decisão do dono): reinicia sempre que a regra
+    mandar. Só segura se o último reinício foi há menos de REINICIO_INTERVALO_MINIMO_SEGUNDOS,
+    para um defeito permanente não virar laço apertado. Grava o horário em disco."""
+    agora = agora or time.time()
+    if _reinicio_bloqueado_ate(agora):
+        return False
     dados = _ler_estado_watchdog()
-    bloqueado_ate = float(dados.get("reinicio_bloqueado_ate") or 0)
-    if agora < bloqueado_ate:
-        return False
-    lista = [float(t) for t in (dados.get("reinicios_processo") or []) if agora - float(t) < 3600]
-    if len(lista) >= maximo and not bloqueado_ate:
-        dados["reinicios_processo"] = lista
-        dados["reinicio_bloqueado_ate"] = agora + espera
-        _gravar_estado_watchdog(dados)
-        return False
+    try:
+        lista = [float(t) for t in (dados.get("reinicios_processo") or []) if agora - float(t) < 3600]
+    except Exception:
+        lista = []
     lista.append(agora)
-    dados["reinicios_processo"] = lista
-    dados["reinicio_bloqueado_ate"] = 0
+    dados["reinicios_processo"] = lista          # só informativo (última hora)
+    dados.pop("reinicio_bloqueado_ate", None)    # campo da 2.2.2 (teto por hora), não existe mais
     _gravar_estado_watchdog(dados)
     return True
 
@@ -4664,13 +4782,12 @@ def _gravar_estado_watchdog(dados):
 def reiniciar_processo(motivo, ignorar_limite=False):
     """Nível 3: reinicia o programa inteiro (fecha o Chrome, sobe outro processo)."""
     global _ENCERRANDO
-    if not ignorar_limite and not _pode_reiniciar_processo():
-        cfg = carregar_filtros()
-        hora = datetime.datetime.fromtimestamp(_reinicio_bloqueado_ate() or time.time()).strftime("%H:%M")
-        log_msg(f"🚧 Reinício do programa pedido ({motivo}), mas já foram "
-                f"{cfg['recuperacao_max_reinicios_por_hora']} na última hora. Segurando até {hora}.")
-        _atualizar_status("falha", f"Falhas repetidas — novo reinício às {hora}")
-        _avisar_bandeja(f"O monitor de senhas está com falhas repetidas. Nova tentativa de reinício às {hora}.")
+    if ignorar_limite:
+        _pode_reiniciar_processo()   # registra o horário (o intervalo mínimo conta a partir dele)
+    elif not _pode_reiniciar_processo():
+        faltam = max(1, int(_reinicio_bloqueado_ate() - time.time()))
+        log_msg(f"⏳ Reinício do programa pedido ({motivo}), mas o último foi há menos de "
+                f"{REINICIO_INTERVALO_MINIMO_SEGUNDOS} s — tento de novo em ~{faltam} s.")
         return False
     log_msg(f"🔁 [N3] Reiniciando o programa inteiro. Motivo: {motivo}")
     _ENCERRANDO = True
@@ -4726,7 +4843,7 @@ def _checar_reinicio_programado(agora):
         return False
     _ADIAMENTO_REINICIO = ""
     log_msg(f"⏰ {motivo}")
-    reiniciar_processo(motivo, ignorar_limite=True)   # planejado: não gasta o limite de 4/h
+    reiniciar_processo(motivo, ignorar_limite=True)   # planejado: não espera o intervalo mínimo
     return True
 
 
@@ -4867,6 +4984,8 @@ def thread_watchdog():
                     _PEDIDO_RECARGA = True
             ultimo_giro = agora
             _passo_watchdog(agora)
+            if _checar_cronometro_login(agora):
+                return
             _checar_reinicio_por_falha(agora)
             _checar_confirmacao_por_tempo(agora)
             _checar_reinicio_programado(agora)

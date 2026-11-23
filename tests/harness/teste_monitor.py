@@ -752,8 +752,9 @@ def teste_limites(m):
     ok("backoff do Chrome: 5, 15, 30, 60, 120, 240 s e depois 15 min", esperas == [5, 15, 30, 60, 120, 240, 900],
        str(esperas))
     m.ARQ_ESTADO_WATCHDOG = os.path.join(SANDBOX, "logs", "watchdog_teste.json")
-    resultados = [m._pode_reiniciar_processo() for _ in range(5)]
-    ok("no máximo 4 reinícios do programa por hora", resultados == [True, True, True, True, False], str(resultados))
+    t = time.time()
+    resultados = [m._pode_reiniciar_processo(agora=t + i * 31) for i in range(8)] +         [m._pode_reiniciar_processo(agora=t + 7 * 31 + 5)]
+    ok("sem teto por hora, só 30 s entre reinícios (2.3.3)", resultados == [True] * 8 + [False], str(resultados))
     erro = Exception("invalid session id: session deleted because of page crash")
     ok("reconhece 'Chrome morto' pelas mensagens do Selenium", m._erro_chrome_morto(erro))
 

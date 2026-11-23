@@ -1,18 +1,18 @@
 {
-  "versao": "2.3.2",
+  "versao": "2.3.3",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "8154079b7af83c954dd69b61cf79b479ebdf089bef9eb39859e9b5b024ba6110",
-  "tamanho": 261099,
+  "sha256": "6092463bd8e643d4b270e1d8f4694985e532a66f343a18bd1fd879951baa7221",
+  "tamanho": 266207,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
-      "sha256": "4fa73ba2899f2126cc77b2e8a93fac6c6f387a026e938a65a1872d7430fe8308",
-      "tamanho": 9965
+      "sha256": "94597c56c38501aaea489bbfcfe45fad4548867f6510331697af47e4955ef86c",
+      "tamanho": 9431
     }
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "Modo requisicao: Chrome fechado logo depois do login; log de cada requisicao (GET, status, ms, bytes, senhas e o corpo quando muda, com dados de paciente mascarados e sem token); chave log_requisicoes (padrao true).",
+  "notas": "Cronometro de login: login (ou relogin) demorando mais de 2 min (login_timeout_seg) reinicia o programa; sem teto de reinicios por hora na escada e no supervisor, so 30 s de intervalo minimo entre reinicios.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "QGsKfKkrneE7j3BnSGLm8pxZ4EL0BROos/RmqzGBhtNGZCzF0+KDHg4lhu/diDZp/UMySHzaZRyzQXANe0FoBQ=="
+  "assinatura": "W2z+u0itYqwdYM/Cs8MG2MeDY+SVPzK2eq9HeDt5o+DgVXwfPmAg+agTAFBHbquOhNtCKSyozZjW4RzrLt6vDQ=="
 }

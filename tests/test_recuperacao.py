@@ -1,5 +1,5 @@
 """Escada de recuperação (2.2.2): Chrome morto -> recria; falha repetida -> reinicia
-o programa; limite de reinícios; nunca durante alarme; supervisor relança.
+o programa; intervalo mínimo entre reinícios (2.3.3: sem teto por hora); nunca durante alarme; supervisor relança.
 Tudo com driver/processos falsos: nenhum Chrome é aberto e o Feegow não é acessado."""
 import json
 import os
@@ -240,33 +240,38 @@ def test_sem_internet_nao_reinicia(estado_limpo, monkeypatch):
     assert m._checar_reinicio_por_falha(time.time()) is False and chamadas == []
 
 
-# --- limite de reinícios -----------------------------------------------------------------------
-def test_limite_de_reinicios_por_hora(estado_limpo):
+# --- sem teto por hora (2.3.3): só o intervalo mínimo de 30 s ------------------------------------
+def test_sem_limite_de_reinicios_por_hora(estado_limpo):
     m = estado_limpo
     t = 1_000_000.0
-    for i in range(5):
-        assert m._pode_reiniciar_processo(agora=t + i) is True
-    assert m._pode_reiniciar_processo(agora=t + 10) is False          # 6º na hora: segura 10 min
-    assert m._reinicio_bloqueado_ate() == pytest.approx(t + 10 + 600)
-    assert m._pode_reiniciar_processo(agora=t + 300) is False         # ainda segurando
-    assert m._pode_reiniciar_processo(agora=t + 611) is True          # passou: tenta de novo
-    assert m._pode_reiniciar_processo(agora=t + 620) is False         # e volta a segurar 10 min
-    assert m._pode_reiniciar_processo(agora=t + 3700) is True         # hora nova: liberado
+    for i in range(10):
+        assert m._pode_reiniciar_processo(agora=t + i * 40) is True      # 10 na hora: todos
+    assert m._pode_reiniciar_processo(agora=t + 9 * 40 + 20) is False    # < 30 s do último
+    assert m._pode_reiniciar_processo(agora=t + 9 * 40 + 30) is True
 
 
-def test_bloqueado_avisa_uma_vez_e_nao_reinicia(estado_limpo, monkeypatch):
+def test_intervalo_minimo_avisa_uma_vez_e_nao_reinicia(estado_limpo, monkeypatch):
     m = estado_limpo
     agora = time.time()
     chamadas, logs = [], []
-    m._gravar_estado_watchdog({"reinicios_processo": [agora - 10] * 5, "reinicio_bloqueado_ate": agora + 600})
+    m._gravar_estado_watchdog({"reinicios_processo": [agora - 10]})
     monkeypatch.setattr(m, "_ETAPA", "reabrindo")
     monkeypatch.setattr(m, "_FALHAS_CHROME", [agora - 30] * 3)
     monkeypatch.setattr(m, "reiniciar_processo", lambda motivo, ignorar_limite=False: chamadas.append(motivo))
     monkeypatch.setattr(m, "log_msg", lambda texto: logs.append(texto))
     for _ in range(4):
         assert m._checar_reinicio_por_falha(agora) is False
-    assert chamadas == [] and len(logs) == 1 and "Próxima tentativa" in logs[0]
-    assert m._STATUS[0] == "falha"
+    assert chamadas == [] and len(logs) == 1 and "30 s" in logs[0]
+    # passou dos 30 s do último reinício: reinicia
+    assert m._checar_reinicio_por_falha(agora + 25) is None and len(chamadas) == 1
+
+
+def test_estado_antigo_com_bloqueio_da_222_nao_segura(estado_limpo):
+    """watchdog_estado.json gravado pela 2.3.2 (teto por hora + 10 min) não segura mais."""
+    m = estado_limpo
+    agora = time.time()
+    m._gravar_estado_watchdog({"reinicios_processo": [agora - 100] * 5, "reinicio_bloqueado_ate": agora + 600})
+    assert m._pode_reiniciar_processo(agora=agora) is True
 
 
 # --- nunca no meio de um alarme ------------------------------------------------------------------
@@ -315,14 +320,12 @@ def test_supervisor_sem_ciclo_ok_e_limite(supervisor, tmp_path, monkeypatch):
     hb(ativo=False, alarme=False, ok_ref_ts=agora - 4000)
     assert not supervisor.sem_ciclo_ok_demais(7, 0, agora)             # offline/fora do horário
 
-    monkeypatch.setattr(supervisor, "_MORTES", [])
-    monkeypatch.setattr(supervisor, "_MORTES_BLOQUEIO", {"ate": 0.0, "avisou": False})
+    monkeypatch.setattr(supervisor, "_ULTIMA_MORTE", {"ts": 0.0})
     monkeypatch.setattr(supervisor, "log", lambda texto: None)
     t = 1_000_000.0
-    assert all(supervisor.pode_forcar_reinicio(t + i) for i in range(5))
-    assert not supervisor.pode_forcar_reinicio(t + 10)
-    assert not supervisor.pode_forcar_reinicio(t + 300)
-    assert supervisor.pode_forcar_reinicio(t + 611)
+    assert all(supervisor.pode_forcar_reinicio(t + i * 30) for i in range(8))   # sem teto por hora
+    assert not supervisor.pode_forcar_reinicio(t + 7 * 30 + 10)                  # só os 30 s mínimos
+    assert supervisor.pode_forcar_reinicio(t + 7 * 30 + 30)
 
 
 def test_supervisor_relanca_monitor_ativo_sem_ciclo_ok(tmp_path):

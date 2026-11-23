@@ -233,7 +233,7 @@ Criado na primeira execução a partir do [`credenciais.exemplo.json`](credencia
 **Topo do painel:**
 
 ```
-● Conectado | último OK há 8s | v2.3.2
+● Conectado | último OK há 8s | v2.3.3
 ```
 
 **Linhas do `logs/monitor.log`** (um `🔎` por ticket do modal; as listas aparecem normalizadas, sem acento nem hífen):
@@ -259,6 +259,7 @@ Criado na primeira execução a partir do [`credenciais.exemplo.json`](credencia
 | 🙈 Uma chamada real está sendo ignorada | Procure no log `🔎 Senha '...' -> IGNORAR (blacklist: '...')` e tire a palavra da blacklist (ou ponha a senha na whitelist). |
 | 📢 Uma chamada de outro tipo dispara | Acrescente à `blacklist` ou use `"comparacao": "exata"`. |
 | 🔑 O login não passa | Confira usuário e senha na aba **Login**. O log avisa se ainda estão os dados de exemplo. Senha errada para na hora, sem ficar tentando. |
+| ⏱️ "Login demorou mais de 2 min: reiniciando o programa" | O login travou ou não terminou em 2 min (`login_timeout_seg`); o monitor reinicia sozinho. Se repetir sempre, confira a internet e o Feegow. |
 | 👥 "Usuário já conectado em outra máquina" | Esperado se o mesmo usuário estiver em outro PC: o monitor reenvia o login a cada 1,5 s até assumir a sessão. Se ficar repetindo, há outro PC usando o mesmo usuário. |
 | ⛔ Parou de relogar ("outro PC usando o mesmo usuário?") | Mais de 3 quedas de sessão numa hora. Ele espera 60 min; salvar o login na janela ⚙️ tenta de novo na hora. |
 | 🔒 "Não consegui abrir a senha protegida" | O `credenciais.json` veio de outro PC ou usuário. Digite a senha de novo na aba **Login**. |

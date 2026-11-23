@@ -9,7 +9,8 @@ Duplo clique (roda com pythonw.exe, sem janela de console). Ele:
     a cada 15 s; parado há mais de 5 min (fora da inicialização) = travado;
   * reserva da escada de recuperação (2.2.2): heartbeat andando, mas o monitor
     "ativo" sem nenhum ciclo OK há mais de 30 min (e sem alarme tocando) = relança;
-  * no máximo 5 relançamentos forçados por hora; passou disso espera 10 min;
+  * sem teto de relançamentos forçados por hora (2.3.3): só um intervalo mínimo de
+    30 s entre um e o próximo, para não virar laço apertado;
   * grava tudo em logs/supervisor.log (com rotação) e não roda duas vezes.
 
 A atualização pelo GitHub, o watchdog do navegador e o log do monitor ficam
@@ -40,13 +41,11 @@ ESPERA_MAXIMA = 300
 # (as variáveis MONITOR_SUP_* existem só para os testes automáticos encurtarem os tempos)
 LIMITE_HEARTBEAT = int(os.environ.get("MONITOR_SUP_LIMITE_HEARTBEAT") or 300)   # s sem heartbeat = travado
 LIMITE_SEM_OK = int(os.environ.get("MONITOR_SUP_LIMITE_SEM_OK") or 1800)   # s ativo sem ciclo OK = relança
-MAX_MORTES_POR_HORA = int(os.environ.get("MONITOR_SUP_MAX_MORTES") or 5)
-ESPERA_LIMITE_MORTES = int(os.environ.get("MONITOR_SUP_ESPERA_LIMITE") or 600)   # s segurando depois do limite
+INTERVALO_MINIMO_MORTES = int(os.environ.get("MONITOR_SUP_INTERVALO_MINIMO") or 30)   # s entre relançamentos forçados
 FOLGA_INICIALIZACAO = int(os.environ.get("MONITOR_SUP_FOLGA") or 300)   # s após abrir/voltar da suspensão
 INTERVALO_CONFERENCIA = int(os.environ.get("MONITOR_SUP_INTERVALO") or 30)   # s entre conferências
 _MUTEX = None
-_MORTES = []            # horários dos relançamentos forçados (heartbeat parado / sem ciclo OK)
-_MORTES_BLOQUEIO = {"ate": 0.0, "avisou": False}
+_ULTIMA_MORTE = {"ts": 0.0}   # último relançamento forçado (heartbeat parado / sem ciclo OK)
 
 
 def log(mensagem):
@@ -130,21 +129,13 @@ def sem_ciclo_ok_demais(pid, folga_ate, agora=None):
 
 
 def pode_forcar_reinicio(agora=None):
-    """Proteção contra laço: até MAX_MORTES_POR_HORA relançamentos forçados por hora;
-    passou disso, segura ESPERA_LIMITE_MORTES e libera uma nova tentativa."""
+    """Desde a 2.3.3 não há teto por hora (decisão do dono): relança sempre que a regra
+    mandar. Só segura se o último relançamento forçado foi há menos de
+    INTERVALO_MINIMO_MORTES segundos (proteção contra laço apertado)."""
     agora = agora or time.time()
-    if agora < _MORTES_BLOQUEIO["ate"]:
-        if not _MORTES_BLOQUEIO["avisou"]:
-            _MORTES_BLOQUEIO["avisou"] = True
-            log(f"Limite de {MAX_MORTES_POR_HORA} relançamentos forçados por hora atingido — "
-                f"segurando até {datetime.datetime.fromtimestamp(_MORTES_BLOQUEIO['ate']):%H:%M}.")
+    if 0 <= agora - _ULTIMA_MORTE["ts"] < INTERVALO_MINIMO_MORTES:
         return False
-    _MORTES[:] = [t for t in _MORTES if agora - t < 3600]
-    if len(_MORTES) >= MAX_MORTES_POR_HORA and not _MORTES_BLOQUEIO["ate"]:
-        _MORTES_BLOQUEIO.update(ate=agora + ESPERA_LIMITE_MORTES, avisou=False)
-        return pode_forcar_reinicio(agora)
-    _MORTES_BLOQUEIO.update(ate=0.0, avisou=False)
-    _MORTES.append(agora)
+    _ULTIMA_MORTE["ts"] = agora
     return True
 
 

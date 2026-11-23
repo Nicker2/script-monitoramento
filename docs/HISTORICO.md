@@ -2,6 +2,14 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.3.3 — cronômetro de login e reinício sem teto por hora
+
+- **Login demorou mais de 2 min = reinicia o programa.** Um cronômetro começa em qualquer tentativa de login (login ao abrir, relogin do modo requisição por sessão expirada ou renovação do token, relogin do modo Chrome, SSO com sessão dupla, bypass e retentativas) e para no login OK: token obtido no modo requisição, página logada no modo Chrome, ou qualquer ciclo OK. Retentativas e reaberturas do Chrome contam no mesmo cronômetro. Quem confere é a thread do watchdog (a cada 15 s), de fora da thread que está logando, então vale também com o Chrome travado. Passou de `login_timeout_seg` (padrão `120`, chave nova no `filtros.json`), o log mostra `⏱️ Login demorou mais de 2 min: reiniciando o programa` e o programa reinicia pelo mesmo caminho do menu *Reiniciar monitor* (`reiniciar_processo`).
+- **Exceções do cronômetro:** com o alarme ou a voz em andamento, espera terminar; com `credenciais.json` vazio/de exemplo ou senha recusada, não reinicia (só avisa, porque reiniciar não adianta); sem internet, não reinicia e o tempo offline não conta (o login nem começa sem internet: `executar_sessao_chrome` espera a conexão antes de abrir o Chrome). Fora do horário, parado e aguardando login zeram o cronômetro.
+- **Sem teto de reinícios por hora** (decisão do dono), em toda a escada de recuperação e no supervisor: saíram o limite de 5 reinícios por hora e a espera de 10 min depois de estourar (`recuperacao_max_reinicios_por_hora` e `recuperacao_espera_limite_min` deixaram de existir; se estiverem no `filtros.json`, são ignoradas). O programa reinicia sempre que a regra mandar. Ficou só um **intervalo mínimo de 30 s** entre um reinício e o próximo (gravado em disco, vale entre processos), para um defeito permanente não virar um laço apertado. O supervisor (`iniciar_monitor.pyw`) segue a mesma regra nos relançamentos forçados. O teto de reaberturas do Chrome (N2, `watchdog_max_reinicios_por_hora`) continua, porque não é reinício do programa e não segura o N3.
+- Testes novos (`tests/test_cronometro_login.py`): login travado por mais de 120 s reinicia (conferido de outra thread), login que termina em 100 s não reinicia, credenciais de exemplo não reiniciam, alarme e voz adiam, sem internet não reinicia, modo requisição só para o cronômetro com o token, sem teto por hora e com intervalo mínimo de 30 s (monitor e supervisor).
+- Publicada só como `.py` (sem `.exe`).
+
 ### v2.3.2 — log das requisições e Chrome fechado depois do login
 
 - **Chrome fechado logo depois do login e da leitura do token**, mesmo com o painel visível (`driver.quit` + restos desse perfil e desse chromedriver, pelo PID), com a linha `🌐 Chrome fechado (modo requisição).` no log. Ele só abre de novo para relogar ou quando você clica em **Mostrar** na bandeja.
