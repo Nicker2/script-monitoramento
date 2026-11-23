@@ -2,6 +2,14 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.3.2 — log das requisições e Chrome fechado depois do login
+
+- **Chrome fechado logo depois do login e da leitura do token**, mesmo com o painel visível (`driver.quit` + restos desse perfil e desse chromedriver, pelo PID), com a linha `🌐 Chrome fechado (modo requisição).` no log. Ele só abre de novo para relogar ou quando você clica em **Mostrar** na bandeja.
+- **Log de cada requisição** (console e `logs\monitor.log`): `→ GET <url> (ciclo N)` e `← <status> em <ms> ms, <bytes> B, <qtd> senha(s): [<Sigla><Senha> <NomeTipo> <HH:MM> (id N)], ...`. Quando a resposta muda (ou em erro/formato inesperado), também vai o corpo em JSON compacto, truncado em ~2000 caracteres. O token nunca é logado; nome de paciente, CPF, telefone, e-mail etc. são mascarados (iniciais ou `***`).
+- Chave nova `log_requisicoes` (padrão `true`) no `filtros.json`, acrescentada pela migração. A rotação do log continua a mesma (1 MB x 5).
+- Testes novos: linhas de log por requisição, corpo só quando muda, 401 logado sem token, mascaramento, log desligado, Chrome fechado com o painel visível e o **Mostrar** da bandeja.
+- Publicada só como `.py` (sem `.exe`).
+
 ### v2.3.1 — modo requisição reloga sempre
 
 - **Sem limite de relogins por hora no modo requisição:** sessão expirada = reloga sempre na hora. Saiu o limite de 3 relogins por hora e a pausa de 60 min ("outro PC com o mesmo usuário?") que a 2.3.0 herdou do modo Chrome. A única proteção é a escada: 2 relogins seguidos sem token novo = reinicia o programa (até 5 por hora, nunca durante alarme ou voz). No modo Chrome o `max_relogins_por_hora` continua valendo.

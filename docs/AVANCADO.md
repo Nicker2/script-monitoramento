@@ -32,7 +32,15 @@ x-access-token: <token do login>
 
 - **Uma requisição a cada `intervalo_requisicao_seg`** (padrão 10 s, mínimo 5), sempre uma depois da outra, nunca em paralelo (~250 ms cada). Sem página aberta, o PC economiza a RAM e a CPU do Chrome (~300 a 400 MB).
 - **O alerta é o mesmo do modo Chrome:** cada ticket traz `NomeTipo` (o texto do botão "Tipo" do modal). Os `NomeTipo` passam pelos mesmos `termos_gatilho`, pela mesma checagem de "parece senha", pela regra whitelist > blacklist > `padrao_sem_match`, pela pausa do CIENTE, pela fala/voz de cada filtro, pela janela vermelha e pelo anti-repetição. O alarme fica ligado enquanto a senha estiver na fila e desarma sozinho quando ela sai, como antes. Cada **id novo** das listas aparece no log (`🆕 Senha nova na fila (id 123): DILATAÇÃO - CCC`); só o tipo da senha vai para o log, nunca dado de paciente.
-- **Painel pela bandeja:** com o painel visível, o Chrome abre **maximizado na Lista de Espera** (regra da 2.2.1), só para você ver. A busca continua por requisição. Ao ocultar o painel, o Chrome fecha.
+- **Chrome fechado logo depois do login** (`driver.quit` + restos desse perfil e desse chromedriver, pelo PID), mesmo com o painel visível. O log mostra `🌐 Chrome fechado (modo requisição).`
+- **Painel pela bandeja:** ao clicar em **Mostrar** com o modo requisição rodando, o Chrome abre **maximizado na Lista de Espera** (regra da 2.2.1), só para você ver. A busca continua por requisição. Ao ocultar o painel, o Chrome fecha.
+- **Log de cada requisição** (`log_requisicoes`, padrão `true`; console e `logs\monitor.log`, com a rotação de sempre, 1 MB x 5):
+  ```
+  → GET https://core.feegow.com/totem-queue/admin/get-queue-by-filter?filter= (ciclo 12)
+  ← 200 em 255 ms, 812 B, 1 senha(s): [MC105 MC 18:35 (id 220703)]
+     corpo: [{"id":220703,"Sigla":"MC","Senha":"105","NomeTipo":"MC",...}]
+  ```
+  O `corpo` (JSON compacto, até ~2000 caracteres) aparece quando a resposta muda em relação à anterior e em todo erro ou formato inesperado. O token e os headers nunca vão para o log. Campos com nome de paciente, CPF, telefone, celular, e-mail, CNS, nascimento etc. viram iniciais (`M.d.S.`) ou `***`; CPF e telefone soltos em qualquer texto também são mascarados. `NomeTipo` (o tipo da senha) fica como está.
 - O `status.json` (e o **Copiar diagnóstico**) ganhou `modo_busca`: configurado, em uso, reserva, ciclos OK, último tempo (ms), falhas seguidas e validade do token. O token em si nunca é gravado nem vai para o log.
 
 ### Recuperação no modo requisição
@@ -55,8 +63,9 @@ O batimento (`heartbeat.json`, supervisor) só anda nos ciclos OK, como na 2.2.2
 | `modo_busca` | `"http"` | `"http"` = modo requisição; `"chrome"` = o método antigo (clique no *Chamar senha*). Vale na hora: trocar para `"chrome"` com o monitor rodando volta para o modo antigo no próximo ciclo. |
 | `intervalo_requisicao_seg` | `10` | Segundos entre uma requisição e a próxima (5 a 300). No modo Chrome continua valendo o `intervalo_busca_segundos`. |
 | `http_ciclos_formato_invalido` | `3` | Respostas fora do formato esperado, seguidas, antes de voltar para o modo Chrome. |
+| `log_requisicoes` | `true` | Loga cada requisição (→ GET / ← resposta) e o corpo quando muda. `false` desliga. |
 
-**Migração:** na primeira leitura pela 2.3.0, as três chaves são **acrescentadas** ao `filtros.json` de cada PC se não existirem. Nada que já está no arquivo é trocado; quem já escreveu `"modo_busca": "chrome"` continua no modo antigo. O log mostra `🌐 filtros.json: modo requisição adicionado`.
+**Migração:** na primeira leitura pela 2.3.0 (2.3.2 para `log_requisicoes`), as chaves são **acrescentadas** ao `filtros.json` de cada PC se não existirem. Nada que já está no arquivo é trocado; quem já escreveu `"modo_busca": "chrome"` continua no modo antigo. O log mostra `🌐 filtros.json: modo requisição adicionado`.
 
 ## Watchdog (auto-recuperação)
 

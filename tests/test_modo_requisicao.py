@@ -412,7 +412,8 @@ def test_migracao_so_acrescenta_chaves(monitor, monkeypatch, tmp_path):
 def test_migracao_mantem_modo_escolhido(monitor):
     dados = {"modo_busca": "chrome", "intervalo_requisicao_seg": 30}
     assert monitor.migrar_modo_requisicao(dados) is True
-    assert dados == {"modo_busca": "chrome", "intervalo_requisicao_seg": 30, "http_ciclos_formato_invalido": 3}
+    assert dados == {"modo_busca": "chrome", "intervalo_requisicao_seg": 30, "http_ciclos_formato_invalido": 3,
+                     "log_requisicoes": True}
     assert monitor.migrar_modo_requisicao(dados) is False
     assert monitor._modo_busca_valido("CHROME") == "chrome"
     assert monitor._modo_busca_valido("qualquer") == "http"
@@ -435,3 +436,85 @@ def test_sem_limite_de_relogins_por_hora(monitor, amb, monkeypatch):
     assert amb["api"].tokens == [TOKEN_A] + tokens[:5]
     assert monitor._ETAPA != "aguardando_login" and amb["batimentos"].count(True) == 1
     assert not any("Parei de relogar" in l for l in amb["logs"])
+
+
+# --- 2.3.2: log de cada requisição, dados mascarados, Chrome fechado depois do login -------
+def _linhas(amb, prefixo):
+    return [l for l in amb["logs"] if l.startswith(prefixo)]
+
+
+def test_log_de_cada_requisicao_e_corpo_quando_muda(monitor, amb):
+    fila = [{"id": 220703, "Sigla": "MC", "Senha": "105", "NomeTipo": "MC",
+             "DataHoraChegada": "2026-11-23T18:35:10", "NomePaciente": "Maria da Silva",
+             "CPF": "123.456.789-09", "Telefone": "(12) 99876-5432"}]
+    amb["api"].roteiro = [("json", []), ("json", []), ("json", fila), ("status", 503, {"erro": "fora"})]
+    monitor.laco_http(TOKEN_A)
+    gets = _linhas(amb, "→ GET ")
+    assert [g.rsplit("(", 1)[1] for g in gets] == ["ciclo 1)", "ciclo 2)", "ciclo 3)", "ciclo 4)"]
+    assert all(amb["api"].url in g for g in gets)
+    respostas = _linhas(amb, "← ")
+    assert respostas[0].startswith("← 200 em ") and respostas[0].endswith("0 senha(s)")
+    assert "1 senha(s): [MC105 MC 18:35 (id 220703)]" in respostas[2]
+    assert respostas[3].startswith("← 503 em ")
+    corpos = _linhas(amb, "   corpo: ")
+    assert len(corpos) == 3                              # 1ª, a que mudou e o erro (a 2ª repetida não)
+    texto = "\n".join(amb["logs"])
+    assert "Maria" not in texto and "123.456.789-09" not in texto and "99876-5432" not in texto
+    assert '"NomePaciente":"M.d.S."' in corpos[1] and '"NomeTipo":"MC"' in corpos[1]
+    assert TOKEN_A not in texto and "x-access-token" not in texto
+
+
+def test_log_requisicoes_desligado(monitor, amb):
+    dados = json.loads(open(monitor.ARQ_FILTROS, encoding="utf-8").read())
+    dados["log_requisicoes"] = False
+    with open(monitor.ARQ_FILTROS, "w", encoding="utf-8") as arquivo:
+        json.dump(dados, arquivo, ensure_ascii=False)
+    amb["api"].roteiro = [("json", _fila("MC"))]
+    monitor.laco_http(TOKEN_A)
+    assert not _linhas(amb, "→ GET ") and not _linhas(amb, "← ")
+
+
+def test_log_401_e_token_nunca_aparece(monitor, amb):
+    amb["api"].roteiro = [("status", 401, {"code": "SESSION_EXPIRED"}), ("json", [])]
+    monitor.laco_http(TOKEN_A)
+    assert _linhas(amb, "← 401 em ")
+    assert any("SESSION_EXPIRED" in l for l in _linhas(amb, "   corpo: "))
+    texto = "\n".join(amb["logs"])
+    assert TOKEN_A not in texto and TOKEN_B not in texto
+
+
+def test_mascarar_dados_paciente(monitor):
+    entrada = {"NomeTipo": "DILATAÇÃO - CCC", "Nome": "João Pedro Souza", "paciente": {"nome": "Ana Lima",
+               "cpf": "12345678909"}, "obs": "ligar 12 3456-7890", "Sigla": "D", "Senha": "12",
+               "NomeFila": "Recepção", "id": 99, "Celular": "11987654321"}
+    saida = monitor.mascarar_dados_paciente(entrada)
+    assert saida["NomeTipo"] == "DILATAÇÃO - CCC" and saida["NomeFila"] == "Recepção"
+    assert saida["Nome"] == "J.P.S." and saida["paciente"] == {"nome": "A.L.", "cpf": "***"}
+    assert saida["obs"] == "ligar ***" and saida["Celular"] == "***" and saida["id"] == 99
+    assert entrada["Nome"] == "João Pedro Souza"   # não altera o original
+    longo = monitor._corpo_para_log(json.dumps([{"NomeTipo": "X" * 50}] * 100).encode(), limite=200)
+    assert len(longo) < 260 and "caracteres)" in longo
+
+
+def test_chrome_fecha_depois_do_login_mesmo_com_painel_visivel(monitor, amb, monkeypatch):
+    fechados = []
+    monkeypatch.setattr(monitor, "driver", object())
+    monkeypatch.setattr(monitor, "is_visible", True)
+    monkeypatch.setattr(monitor, "chrome_vivo", lambda ping=True, timeout=8.0: (True, ""))
+    monkeypatch.setattr(monitor, "_fechar_chrome", lambda: (fechados.append(1), setattr(monitor, "driver", None)))
+    amb["api"].roteiro = [("json", [])]
+    monitor.laco_http(TOKEN_A)
+    assert fechados == [1]
+    assert "🌐 Chrome fechado (modo requisição)." in amb["logs"]
+
+
+def test_mostrar_pela_bandeja_pede_o_chrome(monitor, amb, monkeypatch):
+    monkeypatch.setitem(monitor._HTTP, "ativo", True)
+    monkeypatch.setattr(monitor, "root", type("R", (), {"deiconify": lambda s: None, "state": lambda s, *a: None,
+                                                        "lift": lambda s: None, "focus_force": lambda s: None,
+                                                        "withdraw": lambda s: None})())
+    monkeypatch.setattr(monitor, "_hwnd_chrome", lambda: None)
+    monitor.gerenciar_janelas("mostrar")
+    assert monitor._HTTP["pedido_mostrar"] is True and monitor._quer_chrome_visivel()
+    monitor.gerenciar_janelas("ocultar")
+    assert not monitor._quer_chrome_visivel()

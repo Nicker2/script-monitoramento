@@ -56,7 +56,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.3.1"
+VERSAO = "2.3.2"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -704,6 +704,9 @@ FILTROS_PADRAO = {
     # a API respondeu fora do formato esperado (sem lista / sem NomeTipo) N vezes
     # seguidas = volta sozinho para o modo chrome até o próximo reinício do programa
     "http_ciclos_formato_invalido": 3,
+    # loga cada requisição do modo requisição (→ GET / ← resposta e, quando muda, o corpo
+    # com dados de paciente mascarados). O token nunca vai para o log.
+    "log_requisicoes": True,
     # navegador
     "ciclo_leve": True,                     # clique + leitura do modal num único JavaScript
     "chrome_reinicio_diario_hora": "03:00", # reabre o Chrome 1x por dia nesse horário ("" = não)
@@ -1000,7 +1003,8 @@ def migrar_falas_filtros(dados):
     return mudou
 
 
-CHAVES_MODO_REQUISICAO = ("modo_busca", "intervalo_requisicao_seg", "http_ciclos_formato_invalido")
+CHAVES_MODO_REQUISICAO = ("modo_busca", "intervalo_requisicao_seg", "http_ciclos_formato_invalido",
+                          "log_requisicoes")
 
 
 def migrar_modo_requisicao(dados):
@@ -1152,6 +1156,7 @@ def carregar_filtros(forcar=False):
             "intervalo_requisicao_seg": _para_int(combinado.get("intervalo_requisicao_seg"), 10, 5, 300),
             "http_ciclos_formato_invalido": _para_int(
                 combinado.get("http_ciclos_formato_invalido"), 3, 1, 100),
+            "log_requisicoes": _para_bool(combinado.get("log_requisicoes"), True),
             "chrome_reinicio_diario_hora": _hora_valida(combinado.get("chrome_reinicio_diario_hora")),
             "chrome_limite_ram_mb": _para_int(combinado.get("chrome_limite_ram_mb"), 1500, 0),
             "chrome_bloquear_imagens": _para_bool(combinado.get("chrome_bloquear_imagens"), False),
@@ -1665,6 +1670,8 @@ def gerenciar_janelas(acao):
         is_visible = False
         log_msg("Painel e Navegador ocultados da barra de tarefas.")
     elif acao == "mostrar":
+        if _HTTP["ativo"]:
+            _HTTP["pedido_mostrar"] = True   # modo requisição: abre o Chrome na Lista de Espera
         try:
             root.deiconify()
             root.state("normal")
@@ -3633,7 +3640,8 @@ HTTP_RENOVAR_ANTES_SEGUNDOS = 600   # renova o token quando faltar 10 min para v
 HTTP_TAMANHO_MAXIMO = 5_000_000
 _HTTP = {"ativo": False, "desligado": "", "token_exp": 0.0, "ciclos_ok": 0, "ultimo_ms": 0,
          "falhas_seguidas": 0, "formato_invalido": 0, "relogins_falhos": 0,
-         "chrome_dispensado": False}
+         "chrome_dispensado": False, "pedido_mostrar": False, "requisicoes": 0,
+         "ultimo_corpo": None}
 
 
 class SessaoExpirada(Exception):
@@ -3685,11 +3693,14 @@ def _lista_da_resposta(dados):
     return lista
 
 
-def http_buscar_fila(token, timeout=HTTP_TIMEOUT_SEGUNDOS):
+def http_buscar_fila(token, timeout=HTTP_TIMEOUT_SEGUNDOS, registro=None):
     """GET da fila. SessaoExpirada = relogar; FormatoInesperado = API mudou;
-    qualquer outro erro (timeout, 5xx, 429...) sobe como está (espera progressiva)."""
+    qualquer outro erro (timeout, 5xx, 429...) sobe como está (espera progressiva).
+    `registro` (dict), se vier, recebe status, bytes e corpo da resposta (para o log)."""
     import urllib.error
+    registro = registro if registro is not None else {}
     if not token:
+        registro["status"] = "sem token"
         raise SessaoExpirada("token ausente")
     pedido = urllib.request.Request(URL_API_FILA, headers={
         "x-access-token": token, "Accept": "application/json",
@@ -3700,7 +3711,13 @@ def http_buscar_fila(token, timeout=HTTP_TIMEOUT_SEGUNDOS):
             final = (resposta.geturl() or "").lower()
             tipo = (resposta.headers.get("content-type") or "").lower()
             corpo = resposta.read(HTTP_TAMANHO_MAXIMO)
+            registro.update(status=getattr(resposta, "status", 200), bytes=len(corpo), corpo=corpo)
     except urllib.error.HTTPError as erro:
+        try:
+            corpo_erro = erro.read(20_000) or b""
+        except Exception:
+            corpo_erro = b""
+        registro.update(status=erro.code, bytes=len(corpo_erro), corpo=corpo_erro)
         if erro.code in (401, 403):
             raise SessaoExpirada(f"HTTP {erro.code}") from None
         raise
@@ -3713,6 +3730,99 @@ def http_buscar_fila(token, timeout=HTTP_TIMEOUT_SEGUNDOS):
     except ValueError:
         raise FormatoInesperado("a resposta não é JSON") from None
     return _lista_da_resposta(dados)
+
+
+_RE_CPF = re.compile(r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b")
+_RE_TELEFONE = re.compile(r"\(?\b\d{2}\)?\s?9?\d{4}-\d{4}\b")
+_RE_NUMERO_LONGO = re.compile(r"\b\d{11}\b|\b\d{15}\b")   # CPF/telefone sem pontuação, CNS
+_CHAVES_SENSIVEIS = ("paciente", "cpf", "telefone", "celular", "fone", "whats", "email", "e_mail",
+                     "cns", "nascimento", "rg", "mae", "responsavel", "endereco", "documento")
+_NOMES_QUE_NAO_SAO_PESSOA = ("tipo", "fila", "unidade", "guiche", "local", "sala", "setor", "status")
+
+
+def _chave_sensivel(chave):
+    c = normalizar_texto(chave).lower().replace(" ", "_")
+    compacta = c.replace("_", "")
+    if any(p in compacta for p in _CHAVES_SENSIVEIS):
+        return True
+    return ("nome" in compacta or compacta in ("name", "fullname")) and not any(
+        p in compacta for p in _NOMES_QUE_NAO_SAO_PESSOA)
+
+
+def _iniciais(valor):
+    """"Maria da Silva" -> "M.d.S."; número/CPF/telefone -> "***"."""
+    if valor is None or valor == "":
+        return valor
+    palavras = [p for p in re.split(r"[\s.]+", str(valor)) if p]
+    if not any(ch.isalpha() for ch in str(valor)):
+        return "***"
+    return "".join(p[0] + "." for p in palavras if p[0].isalpha()) or "***"
+
+
+def mascarar_dados_paciente(dados):
+    """Cópia da resposta com nome/CPF/telefone/e-mail... trocados pelas iniciais."""
+    if isinstance(dados, dict):
+        return {k: (_iniciais(v) if _chave_sensivel(k) and not isinstance(v, (dict, list))
+                    else mascarar_dados_paciente(v)) for k, v in dados.items()}
+    if isinstance(dados, list):
+        return [mascarar_dados_paciente(v) for v in dados]
+    if isinstance(dados, str):
+        texto = _RE_CPF.sub("***", dados)
+        texto = _RE_TELEFONE.sub("***", texto)
+        return _RE_NUMERO_LONGO.sub("***", texto)
+    return dados
+
+
+def _corpo_para_log(corpo, limite=2000):
+    """JSON compacto e mascarado (ou o texto cru mascarado), truncado em `limite`."""
+    texto = (corpo or b"").decode("utf-8", errors="replace")
+    try:
+        texto = json.dumps(mascarar_dados_paciente(json.loads(texto)), ensure_ascii=False,
+                           separators=(",", ":"))
+    except ValueError:
+        texto = mascarar_dados_paciente(" ".join(texto.split()))
+    if len(texto) > limite:
+        texto = texto[:limite] + f"... (+{len(texto) - limite} caracteres)"
+    return texto
+
+
+def _hora_chegada(valor):
+    achado = re.search(r"(\d{1,2}):(\d{2})", str(valor or ""))
+    return f"{int(achado.group(1)):02d}:{achado.group(2)}" if achado else "--:--"
+
+
+def resumo_senhas(fila):
+    """[<Sigla><Senha> <NomeTipo> <HH:MM da chegada> (id N)], ... — sem dado de paciente."""
+    partes = []
+    for t in fila:
+        if not isinstance(t, dict):
+            continue
+        senha = f"{t.get('Sigla') or ''}{t.get('Senha') or ''}".strip() or "?"
+        tipo = " ".join(str(t.get("NomeTipo") or "").split())
+        partes.append(f"[{senha} {tipo} {_hora_chegada(t.get('DataHoraChegada'))} (id {t.get('id')})]")
+    return ", ".join(partes)
+
+
+def log_requisicao(ciclo, registro, ms, fila=None, erro=None):
+    """← resposta no log (o → GET é logado antes de enviar). O corpo vai quando
+    mudou em relação à resposta anterior ou quando é erro/formato inesperado."""
+    status = registro.get("status")
+    if status is None:
+        status = f"erro ({_descrever_erro_http(erro)})" if erro is not None else "?"
+    tamanho = registro.get("bytes")
+    linha = f"← {status} em {ms} ms" + (f", {tamanho} B" if tamanho is not None else "")
+    if fila is not None:
+        linha += f", {len(fila)} senha(s)" + (f": {resumo_senhas(fila)}" if fila else "")
+    elif erro is not None and registro.get("status") is not None:
+        linha += f" ({type(erro).__name__}: {str(erro)[:100]})"
+    log_msg(linha)
+    corpo = registro.get("corpo")
+    if corpo is None:
+        return
+    assinatura = hashlib.sha256(corpo).hexdigest()
+    if erro is not None or assinatura != _HTTP["ultimo_corpo"]:
+        log_msg(f"   corpo: {_corpo_para_log(corpo)}")
+    _HTTP["ultimo_corpo"] = assinatura if erro is None else None
 
 
 def _maiusculas_js(texto):
@@ -3766,8 +3876,18 @@ def ler_token_driver(timeout=15.0):
 
 
 def _quer_chrome_visivel():
-    """Painel visível (bandeja -> Mostrar) = o dono quer ver a Lista de Espera."""
-    return bool(is_visible) and not _HTTP["chrome_dispensado"]
+    """O dono pediu para ver a Lista de Espera (bandeja -> Mostrar, com o modo requisição
+    já rodando) e o painel continua visível. Painel visível no início não conta: depois
+    do login o Chrome fecha sempre (2.3.2)."""
+    return bool(is_visible) and _HTTP["pedido_mostrar"] and not _HTTP["chrome_dispensado"]
+
+
+def fechar_chrome_modo_requisicao():
+    """driver.quit + restos DESTE perfil e DESTE chromedriver (pelo PID)."""
+    if driver is None and not _PID_CHROMEDRIVER:
+        return
+    _fechar_chrome()
+    log_msg("🌐 Chrome fechado (modo requisição).")
 
 
 def obter_token_via_chrome(evitar=""):
@@ -3793,7 +3913,7 @@ def obter_token_via_chrome(evitar=""):
         return ""
     finally:
         if not _quer_chrome_visivel():
-            _fechar_chrome()
+            fechar_chrome_modo_requisicao()
 
 
 def _sincronizar_chrome_painel(token):
@@ -3802,14 +3922,14 @@ def _sincronizar_chrome_painel(token):
     Devolve o token (o novo, se a janela aberta trouxe outro)."""
     if not is_visible:
         _HTTP["chrome_dispensado"] = False
+        _HTTP["pedido_mostrar"] = False
     if driver is not None:
         if not chrome_vivo(ping=False)[0]:
             log_msg("🌐 O Chrome foi fechado — o modo requisição segue sem ele.")
             _fechar_chrome()
             _HTTP["chrome_dispensado"] = bool(is_visible)
         elif not _quer_chrome_visivel():
-            log_msg("🌐 Chrome fechado (o modo requisição não precisa dele; abre de novo ao mostrar o painel).")
-            _fechar_chrome()
+            fechar_chrome_modo_requisicao()
         return token
     if not _quer_chrome_visivel():
         return token
@@ -3914,13 +4034,14 @@ def laco_http(token):
     global _PEDIDO_RECARGA
     cfg = carregar_filtros()
     _HTTP.update(ativo=True, falhas_seguidas=0, formato_invalido=0, relogins_falhos=0,
-                 chrome_dispensado=False, token_exp=validade_token(token))
+                 chrome_dispensado=False, pedido_mostrar=False, ultimo_corpo=None,
+                 token_exp=validade_token(token))
     if token:
         validade = (datetime.datetime.fromtimestamp(_HTTP["token_exp"]).strftime("%d/%m %H:%M")
                     if _HTTP["token_exp"] else "?")
         log_msg(f"🌐 Modo requisição ligado: a fila vem direto da API do Feegow a cada "
-                f"{cfg['intervalo_requisicao_seg']} s (token válido até {validade}). O Chrome fica "
-                "fechado e só abre para relogar ou ao mostrar o painel.")
+                f"{cfg['intervalo_requisicao_seg']} s (token válido até {validade}). O Chrome fecha "
+                "agora e só abre para relogar ou quando pedir pela bandeja (Mostrar).")
     token = _sincronizar_chrome_painel(token)
     _definir_etapa("monitorando")
     registrar_batimento(ok=False)
@@ -3964,8 +4085,24 @@ def laco_http(token):
                     log_msg("⚠️ Não consegui renovar o token agora — sigo com o atual (se vencer, reloga).")
 
             t0 = time.time()
+            registro = {}
+            logar = cfg.get("log_requisicoes", True)
+            _HTTP["requisicoes"] += 1
+            if logar:
+                log_msg(f"→ GET {URL_API_FILA} (ciclo {_HTTP['requisicoes']})")
             try:
-                fila = http_buscar_fila(token)
+                fila = http_buscar_fila(token, registro=registro)
+            except Exception as erro:
+                if logar:
+                    log_requisicao(_HTTP["requisicoes"], registro, int((time.time() - t0) * 1000), erro=erro)
+                erro_requisicao = erro
+            else:
+                erro_requisicao = None
+                if logar:
+                    log_requisicao(_HTTP["requisicoes"], registro, int((time.time() - t0) * 1000), fila=fila)
+            try:
+                if erro_requisicao is not None:
+                    raise erro_requisicao
             except SessaoExpirada as erro:
                 acao, token = _relogar_http(erro, token)
                 if acao == "parar":

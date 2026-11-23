@@ -101,5 +101,6 @@
   "atualizacao_canal": "main",
   "modo_busca": "http",
   "intervalo_requisicao_seg": 10,
-  "http_ciclos_formato_invalido": 3
+  "http_ciclos_formato_invalido": 3,
+  "log_requisicoes": true
 }
