@@ -250,7 +250,7 @@ Basta salvar o arquivo — o script recarrega sozinho.
 
 Duplo clique em **`iniciar_monitor.pyw`** (ou no `.exe`). Para testar com console: `python SCRIPT_EXPLICA.py`. Detalhes em [Como executar](#como-executar).
 
-O Chrome roda fora da tela e o programa fica no ícone da bandeja (perto do relógio). A **cor do ícone** mostra o estado: 🟢 conectado, 🟠 recuperando, ⚪ sem internet, 🔴 falhas repetidas. O painel mostra a mesma informação no topo (`● Conectado | último OK há 8s | v2.0.0`).
+O Chrome roda fora da tela e o programa fica no ícone da bandeja (perto do relógio). A **cor do ícone** mostra o estado: 🟢 conectado, 🟠 recuperando, ⚪ sem internet, 🔴 falhas repetidas. O painel mostra a mesma informação no topo (`● Conectado | último OK há 8s | v2.1.1`).
 
 ### 4. Janela de configurações (⚙️ no painel)
 
@@ -482,7 +482,7 @@ Na primeira execução ele cria os dois sozinhos e abre a caixa pedindo login/se
 | Uma chamada real está sendo ignorada | Alguma palavra da `blacklist` está no texto do botão. Veja no log a linha `🔎 Botão '...' -> blacklist ('...')` e ajuste o `filtros.json`. |
 | Uma chamada de outro tipo está disparando | Acrescente a palavra à `blacklist` (ou use `"comparacao": "exata"`). |
 | O login não passa | Confira `usuario`/`senha` no `credenciais.json`. O log avisa se ainda está com os dados de exemplo. |
-| "Usuário já conectado em outra máquina" | É esperado: o script tenta assumir a sessão (até 120 tentativas, espera de 1 s crescendo até 10 s; desiste em 5 min e manda o JavaScript parar). |
+| "Usuário já conectado em outra máquina" | É esperado quando o mesmo usuário está logado em outro PC. No SSO o script reenvia o login a cada **1,5 s** (até 40 tentativas, ~60 s) até assumir a sessão; na rota legada são 120 tentativas com espera de 1 s crescendo até 10 s. Se ficar repetindo, veja `max_relogins_por_hora` (há outro PC usando o mesmo usuário). |
 | O programa não acha o Chrome | Feche as janelas do Chrome abertas pelo Selenium e reinicie (o rastreamento é por PID). |
 | `Chrome failed to start: crashed (DevToolsActivePort file doesn't exist)` | Um Chrome órfão de execução anterior estava travando o perfil fixo. O script agora encerra esses processos no arranque (`🧹 Encerrei N processo(s) de Chrome antigos`) e, se ainda falhar, abre com perfil temporário. |
 | Clique no ícone da bandeja não responde / pisca | Corrigido: o clique agora é agendado para a thread do Tk (antes mexia na janela direto da thread do pystray, o que travava), o estado vem do `root.state()` em vez de um flag, há trava de 400 ms contra clique duplo e o menu ganhou **Mostrar Painel** / **Ocultar Painel** separados. |
@@ -528,6 +528,14 @@ Regras de segurança:
 ---
 
 ## Histórico de Alterações
+
+### v2.1.1 — login SSO assume a sessão em segundos
+
+- **O login pela rota nova (`/main/sso/`) voltou a passar quando outra máquina está logada.** O Feegow devolve o formulário com `input[name=disconnect]`, **apaga a senha** e espera você confirmar "Deslogar usuário e entrar". O código antigo clicava em Enviar com o campo vazio — o próprio `sso-login.js` do site ignora esse clique (`if (!password.value) return`) — e a espera ia até 90 s sem nada acontecer.
+- **Reenvio rápido:** agora o login é reenviado por `fetch` a cada **1,5 s** (até 40 tentativas, ~60 s) até a resposta deixar de ser a tela de conflito. Antes era o handshake nativo do site: `check` de 5 em 5 s, teto de 60 s.
+- **Senha reposta na tela de conflito** antes de qualquer clique, e o fallback (handshake do site) continua existindo se o JavaScript não puder rodar.
+- **Senha errada aborta na hora** (`E-mail ou senha incorretos` / `não conferem`): não entra no laço de reenvio nem derruba a outra máquina por causa de um erro de digitação.
+- A rota legada (`?P=Login`) mantém o comportamento anterior: 120 tentativas com espera de 1 s crescendo até 10 s.
 
 ### v2.1.0 — mais leve, mais seguro e mais fácil de diagnosticar
 
