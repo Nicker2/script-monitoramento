@@ -98,5 +98,8 @@
   "reiniciar_a_cada_min": 60,
   "auto_atualizar": true,
   "atualizacao_intervalo_minutos": 60,
-  "atualizacao_canal": "main"
+  "atualizacao_canal": "main",
+  "modo_busca": "http",
+  "intervalo_requisicao_seg": 10,
+  "http_ciclos_formato_invalido": 3
 }

@@ -4,6 +4,7 @@
 
 ## Sumário
 
+- [Modo requisição (2.3.0)](#modo-requisição-230)
 - [Watchdog (auto-recuperação)](#watchdog-auto-recuperação)
 - [Atualização automática](#atualização-automática)
 - [Áudio: só a saída padrão](#áudio-só-a-saída-padrão)
@@ -19,6 +20,43 @@
 - [Arquivos do repositório](#arquivos-do-repositório)
 
 ---
+
+## Modo requisição (2.3.0)
+
+Padrão a partir da 2.3.0 (`"modo_busca": "http"`). O Selenium continua fazendo o login como antes; depois disso o monitor lê o token do login (`sessionStorage["tk"]`, um JWT que vale ~12 h), **fecha o Chrome** e passa a pedir a fila direto à API que o próprio modal *Chamar senha* usa:
+
+```
+GET https://core.feegow.com/totem-queue/admin/get-queue-by-filter?filter=
+x-access-token: <token do login>
+```
+
+- **Uma requisição a cada `intervalo_requisicao_seg`** (padrão 10 s, mínimo 5), sempre uma depois da outra, nunca em paralelo (~250 ms cada). Sem página aberta, o PC economiza a RAM e a CPU do Chrome (~300 a 400 MB).
+- **O alerta é o mesmo do modo Chrome:** cada ticket traz `NomeTipo` (o texto do botão "Tipo" do modal). Os `NomeTipo` passam pelos mesmos `termos_gatilho`, pela mesma checagem de "parece senha", pela regra whitelist > blacklist > `padrao_sem_match`, pela pausa do CIENTE, pela fala/voz de cada filtro, pela janela vermelha e pelo anti-repetição. O alarme fica ligado enquanto a senha estiver na fila e desarma sozinho quando ela sai, como antes. Cada **id novo** das listas aparece no log (`🆕 Senha nova na fila (id 123): DILATAÇÃO - CCC`); só o tipo da senha vai para o log, nunca dado de paciente.
+- **Painel pela bandeja:** com o painel visível, o Chrome abre **maximizado na Lista de Espera** (regra da 2.2.1), só para você ver. A busca continua por requisição. Ao ocultar o painel, o Chrome fecha.
+- O `status.json` (e o **Copiar diagnóstico**) ganhou `modo_busca`: configurado, em uso, reserva, ciclos OK, último tempo (ms), falhas seguidas e validade do token. O token em si nunca é gravado nem vai para o log.
+
+### Recuperação no modo requisição
+
+| Situação | O que o monitor faz |
+|---|---|
+| Sessão expirada: HTTP 401/403, `{"code":"SESSION_EXPIRED"}`, HTML ou tela de login no lugar do JSON, token ausente | **Reloga na hora** (abre o Chrome escondido, entra, lê o token novo, fecha) e repete a requisição, sem esperar. Vale o limite de `max_relogins_por_hora` (3): se a sessão cair mais que isso numa hora (outro PC com o mesmo usuário?), para de relogar por 60 min, como no modo Chrome. |
+| Relogin falhou **2 vezes seguidas** | **Reinicia o programa inteiro** pelo caminho da escada 2.2.2 (`reiniciar_processo`): no máximo 5 por hora (depois segura 10 min), nunca com a janela vermelha aberta ou a voz falando, nunca sem internet. |
+| Rede/servidor: timeout, HTTP 5xx, 429 | Espera **10 → 20 → 40 → 60 s** (teto) e volta a 10 s no primeiro sucesso. Sem internet, espera a conexão voltar (não conta como falha). |
+| **3 min sem nenhuma resposta boa** | Reinicia o programa inteiro (mesmo caminho e mesmos limites acima). O watchdog também confere isso (`recuperacao_min_sem_ok`). |
+| Token a menos de **10 min** de vencer | Renova antes: reaproveita a sessão do Chrome se o token dela ainda valer, senão faz o login. Se não der, tenta de novo em 2 min e, se vencer, cai no relogin. |
+| A API deixou de mandar a lista ou o `NomeTipo` por `http_ciclos_formato_invalido` (3) ciclos seguidos | **Volta sozinho para o modo Chrome** (clique no *Chamar senha* e leitura do modal), avisa no log e na bandeja e fica nele até o próximo reinício do programa (o reinício programado de 60 min tenta o modo requisição de novo). |
+
+O batimento (`heartbeat.json`, supervisor) só anda nos ciclos OK, como na 2.2.2. As esperas de propósito (backoff) registram progresso, mas não "ciclo OK", então a escada continua subindo se o Feegow não responder. O watchdog não trata o Chrome fechado como falha no modo requisição.
+
+### Chaves no `filtros.json`
+
+| Chave | Padrão | O que faz |
+|---|---|---|
+| `modo_busca` | `"http"` | `"http"` = modo requisição; `"chrome"` = o método antigo (clique no *Chamar senha*). Vale na hora: trocar para `"chrome"` com o monitor rodando volta para o modo antigo no próximo ciclo. |
+| `intervalo_requisicao_seg` | `10` | Segundos entre uma requisição e a próxima (5 a 300). No modo Chrome continua valendo o `intervalo_busca_segundos`. |
+| `http_ciclos_formato_invalido` | `3` | Respostas fora do formato esperado, seguidas, antes de voltar para o modo Chrome. |
+
+**Migração:** na primeira leitura pela 2.3.0, as três chaves são **acrescentadas** ao `filtros.json` de cada PC se não existirem. Nada que já está no arquivo é trocado; quem já escreveu `"modo_busca": "chrome"` continua no modo antigo. O log mostra `🌐 filtros.json: modo requisição adicionado`.
 
 ## Watchdog (auto-recuperação)
 

@@ -78,8 +78,8 @@ O script abre o Feegow num Chrome controlado pelo Selenium, entra na **Lista de 
 ```mermaid
 flowchart TD
     A([🚀 iniciar_monitor.pyw<br/>supervisor]) --> B[Abre o Chrome fora da tela<br/>e faz login no Feegow]
-    B --> C[Lista de Espera:<br/>clica em Chamar senha]
-    C --> D[Lê todos os tickets do modal]
+    B --> C[Lê o token do login e fecha o Chrome<br/>pede a fila à API do Feegow a cada 10 s]
+    C --> D[Lê todos os tickets da fila]
     D --> E{Para cada ticket}
     E -->|casou na whitelist| F[🔊 Voz + 🚨 janela]
     E -->|casou na blacklist| G[Ignora]
@@ -93,9 +93,12 @@ flowchart TD
     K --> L
     L --> C
 
+    C -. API mudou de formato .-> X[Modo Chrome: clica em<br/>Chamar senha e lê o modal]
     W[[🛡️ Watchdog]] -. sem resposta .-> R[Relogar / recarregar<br/>→ reabrir Chrome<br/>→ reiniciar programa]
     R -.-> C
 ```
+
+**Modo requisição (2.3.0, padrão):** depois do login, o monitor pega a fila direto da API do Feegow (uma requisição a cada `intervalo_requisicao_seg`, padrão 10 s) com o Chrome **fechado**, o que é mais leve e não depende da página. O Chrome volta a abrir só para relogar ou quando você mostra o painel pela bandeja. Se a API do Feegow mudar, o monitor volta sozinho para o modo antigo (clique no *Chamar senha*). Para usar sempre o modo antigo, ponha `"modo_busca": "chrome"` no `filtros.json`. Detalhes em [AVANCADO.md](docs/AVANCADO.md#modo-requisição-230).
 
 A comparação **ignora acentos, maiúsculas e pontuação**: `PRIORITARIA` no `filtros.json` casa com `PRIORITÁRIA` na tela, e `DILATAÇÃO-CCC` casa com `dilatacao ccc`.
 
@@ -230,7 +233,7 @@ Criado na primeira execução a partir do [`credenciais.exemplo.json`](credencia
 **Topo do painel:**
 
 ```
-● Conectado | último OK há 8s | v2.2.2
+● Conectado | último OK há 8s | v2.3.0
 ```
 
 **Linhas do `logs/monitor.log`** (um `🔎` por ticket do modal; as listas aparecem normalizadas, sem acento nem hífen):

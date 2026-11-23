@@ -1,9 +1,9 @@
 {
-  "versao": "2.2.2",
+  "versao": "2.3.0",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "9f228a1022b8acaa17288c74e021f57dcddca3b003b09f13ad15c0032e38d1e0",
-  "tamanho": 231725,
+  "sha256": "d67f23ec555906d4408497ad0e65cb39b785bc893b2e944648c2da3e4c2e3d93",
+  "tamanho": 254683,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
       "sha256": "4fa73ba2899f2126cc77b2e8a93fac6c6f387a026e938a65a1872d7430fe8308",
@@ -12,7 +12,7 @@
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "Escada de recuperacao: Chrome/chromedriver sumiu -> recria o driver e reloga; 3 reaberturas sem ciclo OK em 10 min ou 3 min sem ciclo OK -> reinicia o programa (max 5/h, depois espera 10 min; nunca durante alarme); supervisor relanca com heartbeat parado > 5 min.",
+  "notas": "Modo requisicao: depois do login le o token e consulta a fila direto na API do Feegow a cada 10 s com o Chrome fechado; alerta identico; sessao expirada -> reloga na hora (2 falhas -> reinicia); 5xx/timeout -> espera 10/20/40/60 s; 3 min sem OK -> reinicia; API mudou -> volta sozinho ao modo Chrome. modo_busca=chrome forca o modo antigo.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "zxcSkRAMBTG7z9unD2qy29Q5AVIu0DXtqwq2V/RsC6MxtjqBOCsb62HvBdviu3NzwYVUBBOYDrHYkndv1O6XBA=="
+  "assinatura": "56eojR5HmBE7VSjUZuXYGn7JOCA/o3te52ON2T1CxxF4eRcbvSeYapMQFHoXdalc7LpOaYkd0ZmnFi5S46NyDA=="
 }

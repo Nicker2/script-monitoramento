@@ -2,6 +2,18 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.3.0 — modo requisição: a fila vem direto da API do Feegow
+
+- **Novo padrão `"modo_busca": "http"`.** O login continua pelo Chrome (Selenium); depois o monitor lê o token do login (`sessionStorage["tk"]`), **fecha o Chrome** e pede a fila a `core.feegow.com/totem-queue/admin/get-queue-by-filter` com o header `x-access-token`, uma requisição a cada `intervalo_requisicao_seg` (padrão 10 s), sempre uma de cada vez. Menos RAM e CPU, e nenhuma dependência da página, do modal ou do clique.
+- **O alerta é idêntico ao do modo Chrome:** o `NomeTipo` de cada ticket passa pelos mesmos `termos_gatilho`, checagem de senha, whitelist > blacklist, pausa do CIENTE, fala/voz por filtro, janela vermelha e anti-repetição. Cada id novo das listas vai para o log (só o tipo da senha).
+- **Recuperação:** sessão expirada (401/403/`SESSION_EXPIRED`/HTML/token ausente) = reloga na hora e repete; 2 relogins seguidos sem token novo = reinicia o programa (escada da 2.2.2: até 5 por hora, nunca durante alarme ou fala); timeout/5xx/429 = espera 10 → 20 → 40 → 60 s e volta a 10 no primeiro sucesso; 3 min sem resposta boa = reinicia o programa; token renovado quando faltam 10 min para vencer.
+- **Reserva automática:** se a API deixar de mandar a lista ou o `NomeTipo` por 3 ciclos seguidos (`http_ciclos_formato_invalido`), o monitor volta sozinho para o modo Chrome (clique no *Chamar senha*), avisa no log e na bandeja e tenta o modo requisição de novo no próximo reinício. `"modo_busca": "chrome"` força o modo antigo.
+- **Painel pela bandeja:** com o painel visível o Chrome abre maximizado na Lista de Espera, só para ver; ao ocultar, fecha.
+- **Migração:** o `filtros.json` de cada PC só ganha as chaves novas (`modo_busca`, `intervalo_requisicao_seg`, `http_ciclos_formato_invalido`); nada existente é trocado.
+- `status.json` ganhou `modo_busca`. O heartbeat e o supervisor funcionam igual (batimento só em ciclo OK).
+- Testes novos em `tests/test_modo_requisicao.py`, com uma API falsa local: senha nova → alerta idêntico ao modo Chrome, blacklist, 401/403/HTML → relogin, 2 relogins falhos → reinício, 5xx/429 → espera progressiva, 3 min sem OK → reinício, formato quebrado → modo Chrome, migração.
+- Publicada só como `.py` (sem `.exe`): os PCs que usam o `.exe` continuam na 2.2.0.
+
 ### v2.2.2 — escada de recuperação: Chrome sumiu, o monitor se recupera sozinho
 
 - **Corrigido o "batendo cabeça" sem Chrome.** Quando o Chrome/chromedriver morria, o monitor reabria o Chrome (N2) com espera crescente (5 s, 15 s, 30 s… até 10 min, e 15 min depois de 6 por hora), mas **nunca subia para o reinício do programa**: o N3 só olhava o tempo *sem batimento*, e toda tentativa e toda espera registravam batimento (`registrar_batimento(ok=False)` / `_dormir(..., progresso=True)`). O supervisor também não agia, porque o heartbeat é gravado pela thread do watchdog, que continuava viva. Além disso, `_visivel`, `_senhas_na_tela`, `_confirmar_troca_sessao` e os laços do bypass do login engoliam o erro de conexão e ficavam até 20 s / 90 s / 5 min chamando a porta fechada do chromedriver (as linhas `Retrying ... Failed to establish a new connection` no console).

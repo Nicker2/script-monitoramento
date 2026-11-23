@@ -7,6 +7,7 @@ import sys
 import time
 import queue
 import socket
+import base64
 import hashlib
 import threading
 import datetime
@@ -55,7 +56,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.2.2"
+VERSAO = "2.3.0"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -695,6 +696,14 @@ FILTROS_PADRAO = {
     "hosts_verificacao_internet": ["app.feegow.com", "www.google.com"],
     # se a sessão cair mais que isso numa hora, o monitor para de relogar por 60 min
     "max_relogins_por_hora": 3,
+    # modo de busca (2.3.0): "http" = depois do login lê a fila direto da API do Feegow
+    # (Chrome fechado, 1 requisição a cada intervalo_requisicao_seg); "chrome" = o
+    # método antigo (clique no "Chamar senha" e leitura do modal).
+    "modo_busca": "http",
+    "intervalo_requisicao_seg": 10,
+    # a API respondeu fora do formato esperado (sem lista / sem NomeTipo) N vezes
+    # seguidas = volta sozinho para o modo chrome até o próximo reinício do programa
+    "http_ciclos_formato_invalido": 3,
     # navegador
     "ciclo_leve": True,                     # clique + leitura do modal num único JavaScript
     "chrome_reinicio_diario_hora": "03:00", # reabre o Chrome 1x por dia nesse horário ("" = não)
@@ -991,6 +1000,25 @@ def migrar_falas_filtros(dados):
     return mudou
 
 
+CHAVES_MODO_REQUISICAO = ("modo_busca", "intervalo_requisicao_seg", "http_ciclos_formato_invalido")
+
+
+def migrar_modo_requisicao(dados):
+    """Primeira execução da 2.3.0: só ACRESCENTA as chaves do modo requisição que
+    faltam no filtros.json (nunca troca um valor que já existe). True = mudou."""
+    mudou = False
+    for chave in CHAVES_MODO_REQUISICAO:
+        if chave not in dados:
+            dados[chave] = FILTROS_PADRAO[chave]
+            mudou = True
+    return mudou
+
+
+def _modo_busca_valido(valor):
+    modo = str(valor or "").strip().lower()
+    return modo if modo in ("http", "chrome") else "http"
+
+
 def filtro_da_senha(ticket, cfg=None):
     """Filtro (de falas_filtros) em que a senha se encaixa, ou None."""
     cfg = cfg or carregar_filtros()
@@ -1056,6 +1084,16 @@ def carregar_filtros(forcar=False):
             except Exception as e:
                 log_msg(f"⚠️ Não consegui gravar as falas por filtro no filtros.json ({e}). "
                         "Usando os padrões só na memória.")
+        if migrar_modo_requisicao(dados):
+            try:
+                _gravar_json(ARQ_FILTROS, dados)
+                mtime = os.path.getmtime(ARQ_FILTROS)
+                log_msg(f"🌐 filtros.json: modo requisição adicionado (modo_busca='{dados['modo_busca']}', "
+                        f"intervalo_requisicao_seg={dados['intervalo_requisicao_seg']}). "
+                        "O resto ficou como estava.")
+            except Exception as e:
+                log_msg(f"⚠️ Não consegui gravar as chaves do modo requisição no filtros.json ({e}). "
+                        "Usando os padrões só na memória.")
         combinado = dict(FILTROS_PADRAO)
         combinado.update({k: v for k, v in dados.items() if not str(k).startswith("_") and v is not None})
         _FILTROS = {
@@ -1110,6 +1148,10 @@ def carregar_filtros(forcar=False):
             "atualizacao_canal": str(combinado.get("atualizacao_canal") or CANAL_ATUALIZACAO_PADRAO).strip(),
             "max_relogins_por_hora": _para_int(combinado.get("max_relogins_por_hora"), 3, 1),
             "ciclo_leve": _para_bool(combinado.get("ciclo_leve"), True),
+            "modo_busca": _modo_busca_valido(combinado.get("modo_busca")),
+            "intervalo_requisicao_seg": _para_int(combinado.get("intervalo_requisicao_seg"), 10, 5, 300),
+            "http_ciclos_formato_invalido": _para_int(
+                combinado.get("http_ciclos_formato_invalido"), 3, 1, 100),
             "chrome_reinicio_diario_hora": _hora_valida(combinado.get("chrome_reinicio_diario_hora")),
             "chrome_limite_ram_mb": _para_int(combinado.get("chrome_limite_ram_mb"), 1500, 0),
             "chrome_bloquear_imagens": _para_bool(combinado.get("chrome_bloquear_imagens"), False),
@@ -2801,6 +2843,19 @@ def executar_sessao_chrome():
             log_msg("🛑 Login não concluído — monitoramento parado até salvar o login na janela ⚙️.")
             return None
         return "o login não foi concluído"
+    if carregar_filtros().get("modo_busca") == "http" and not _HTTP["desligado"]:
+        motivo = sessao_modo_requisicao()
+        if motivo != VOLTAR_PARA_CHROME:
+            return motivo
+        # reserva: a API mudou de formato (ou o modo foi trocado no filtros.json)
+        if driver is None or not chrome_vivo(ping=False)[0]:
+            _fechar_chrome()
+            _definir_etapa("abrindo_chrome")
+            if not _abrir_chrome():
+                return "o Chrome não abriu"
+            _definir_etapa("login")
+            if not fazer_login():
+                return "o login não foi concluído"
     return verificar_botao_chamar_senha()
 
 
@@ -3287,9 +3342,10 @@ _ULTIMO_CONJUNTO_SENHAS = None   # conjunto avaliado no ciclo anterior (log só 
 _AVISO_PAUSA_ATE = None
 
 
-def verificar_botao_explicacao(textos=None):
-    """Avalia as senhas do modal. `textos` vem do ciclo leve (JS); sem ele,
-    procura os botões pelo caminho antigo (XPath + polling)."""
+def verificar_botao_explicacao(textos=None, fechar=True):
+    """Avalia as senhas do modal. `textos` vem do ciclo leve (JS) ou da API (modo
+    requisição); sem ele, procura os botões pelo caminho antigo (XPath + polling).
+    fechar=False (modo requisição): não manda ESC para o Chrome (não há modal)."""
     global _TICKET_ALARME, _ULTIMO_CONJUNTO_SENHAS, _AVISO_PAUSA_ATE
     cfg = carregar_filtros()
 
@@ -3315,7 +3371,8 @@ def verificar_botao_explicacao(textos=None):
         if alarme_ativo:
             log_msg("🔇 A senha saiu da tela — desarmando o alarme.")
             na_ui(desarmar_alarme, False)
-        fechar_modal()
+        if fechar:
+            fechar_modal()
         return
 
     a_alertar = []
@@ -3343,7 +3400,8 @@ def verificar_botao_explicacao(textos=None):
     except Exception as e:
         log_msg(f"⚠️ Falha ao avaliar as senhas: {e}")
     finally:
-        fechar_modal()
+        if fechar:
+            fechar_modal()
 
 
 # --- Ciclo leve: clique + leitura do modal num único JavaScript -------------------
@@ -3553,6 +3611,417 @@ def verificar_botao_chamar_senha():
     return None
 
 
+# ==============================================================================
+# 🌐 MODO REQUISIÇÃO (2.3.0): a fila vem direto da API do Feegow
+# ==============================================================================
+# O modal "Chamar senha" do Feegow só faz um GET JSON em
+#   https://core.feegow.com/totem-queue/admin/get-queue-by-filter?filter=
+# com UM header, x-access-token = sessionStorage["tk"] (JWT do login, ~12 h).
+# Cada ticket traz NomeTipo (o texto do botão "Tipo" do modal), id, Sigla, Senha...
+# No modo "http" o Selenium continua fazendo o login; depois disso o token é lido,
+# o Chrome é FECHADO (libera RAM) e o laço é urllib puro: 1 requisição a cada
+# intervalo_requisicao_seg, nunca em paralelo. Os NomeTipo passam pela MESMA
+# avaliação do modo Chrome (verificar_botao_explicacao): termos_gatilho,
+# _texto_parece_senha, whitelist > blacklist, filtro/fala, janela e voz.
+URL_API_FILA = "https://core.feegow.com/totem-queue/admin/get-queue-by-filter?filter="
+VOLTAR_PARA_CHROME = "__voltar_para_chrome__"   # sessao_modo_requisicao: usar o modo antigo
+HTTP_TIMEOUT_SEGUNDOS = 15
+HTTP_ESPERA_MAXIMA = 60             # espera progressiva 10 -> 20 -> 40 -> 60 s
+HTTP_MAX_SEM_OK_SEGUNDOS = 180      # 3 min sem resposta boa = reinicia o programa
+HTTP_MAX_RELOGINS_FALHOS = 2        # relogin falhou 2x seguidas = reinicia o programa
+HTTP_RENOVAR_ANTES_SEGUNDOS = 600   # renova o token quando faltar 10 min para vencer
+HTTP_TAMANHO_MAXIMO = 5_000_000
+_HTTP = {"ativo": False, "desligado": "", "token_exp": 0.0, "ciclos_ok": 0, "ultimo_ms": 0,
+         "falhas_seguidas": 0, "formato_invalido": 0, "relogins_falhos": 0,
+         "chrome_dispensado": False}
+
+
+class SessaoExpirada(Exception):
+    """401/403, SESSION_EXPIRED, HTML/login no lugar do JSON ou token ausente: relogar na hora."""
+
+
+class FormatoInesperado(Exception):
+    """A API respondeu, mas sem a lista de tickets / sem NomeTipo."""
+
+
+def validade_token(token):
+    """Timestamp do "exp" do JWT (0 = não deu para ler). Não valida a assinatura."""
+    try:
+        parte = str(token).split(".")[1]
+        parte += "=" * (-len(parte) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(parte.encode("ascii")))["exp"])
+    except Exception:
+        return 0.0
+
+
+def _token_serve(token, evitar=""):
+    if not token or token == evitar:
+        return False
+    exp = validade_token(token)
+    return not exp or exp - time.time() > HTTP_RENOVAR_ANTES_SEGUNDOS + 60
+
+
+def espera_progressiva(base, falhas):
+    """Espera depois de `falhas` erros seguidos de rede/servidor: 10, 20, 40, 60, 60..."""
+    teto = max(HTTP_ESPERA_MAXIMA, base)
+    return min(teto, base * (2 ** max(0, int(falhas) - 1)))
+
+
+def _lista_da_resposta(dados):
+    """A lista de tickets da resposta, ou FormatoInesperado/SessaoExpirada."""
+    if isinstance(dados, dict):
+        if str(dados.get("code") or "").upper() == "SESSION_EXPIRED":
+            raise SessaoExpirada("SESSION_EXPIRED")
+        lista = next((dados[k] for k in ("data", "tickets", "queue", "result", "results")
+                      if isinstance(dados.get(k), list)), None)
+        if lista is None:
+            raise FormatoInesperado(f"objeto sem lista de senhas (chaves: {', '.join(sorted(map(str, dados))[:6])})")
+    elif isinstance(dados, list):
+        lista = dados
+    else:
+        raise FormatoInesperado(f"resposta do tipo {type(dados).__name__}")
+    if lista and not any(isinstance(t, dict) and "NomeTipo" in t for t in lista):
+        raise FormatoInesperado("senhas sem o campo NomeTipo")
+    return lista
+
+
+def http_buscar_fila(token, timeout=HTTP_TIMEOUT_SEGUNDOS):
+    """GET da fila. SessaoExpirada = relogar; FormatoInesperado = API mudou;
+    qualquer outro erro (timeout, 5xx, 429...) sobe como está (espera progressiva)."""
+    import urllib.error
+    if not token:
+        raise SessaoExpirada("token ausente")
+    pedido = urllib.request.Request(URL_API_FILA, headers={
+        "x-access-token": token, "Accept": "application/json",
+        "Origin": "https://app.feegow.com", "Referer": "https://app.feegow.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    try:
+        with urllib.request.urlopen(pedido, timeout=timeout) as resposta:
+            final = (resposta.geturl() or "").lower()
+            tipo = (resposta.headers.get("content-type") or "").lower()
+            corpo = resposta.read(HTTP_TAMANHO_MAXIMO)
+    except urllib.error.HTTPError as erro:
+        if erro.code in (401, 403):
+            raise SessaoExpirada(f"HTTP {erro.code}") from None
+        raise
+    if "/sso" in final or "login" in final:
+        raise SessaoExpirada("a API redirecionou para o login")
+    if "html" in tipo or corpo.lstrip()[:1] == b"<":
+        raise SessaoExpirada("veio HTML no lugar do JSON")
+    try:
+        dados = json.loads(corpo.decode("utf-8", errors="replace"))
+    except ValueError:
+        raise FormatoInesperado("a resposta não é JSON") from None
+    return _lista_da_resposta(dados)
+
+
+def _maiusculas_js(texto):
+    """Igual ao maiusculas() do JS_CICLO_LEVE: só a-z vira A-Z (acentos ficam)."""
+    return "".join(c.upper() if "a" <= c <= "z" else c for c in texto)
+
+
+def textos_da_fila(fila, cfg):
+    """NomeTipo de cada ticket que o modo Chrome também pegaria: o mesmo filtro dos
+    termos_gatilho que o JS_CICLO_LEVE aplica aos botões do modal."""
+    termos = [str(t).strip().upper() for t in (cfg.get("termos_gatilho") or []) if str(t).strip()]
+    textos = []
+    for ticket in fila:
+        if not isinstance(ticket, dict):
+            continue
+        texto = " ".join(str(ticket.get("NomeTipo") or "").split())
+        if texto and any(termo in _maiusculas_js(texto) for termo in termos):
+            textos.append(texto)
+    return textos
+
+
+def _registrar_ids_novos(fila, anteriores, cfg):
+    """Loga cada senha NOVA (id que não estava no ciclo anterior) das listas do filtro.
+    Só o tipo da senha vai para o log, nunca dado de paciente."""
+    atuais = {}
+    for ticket in fila:
+        if isinstance(ticket, dict) and ticket.get("id") is not None:
+            atuais[str(ticket.get("id"))] = " ".join(str(ticket.get("NomeTipo") or "").split())
+    if anteriores is not None:
+        for id_ticket, texto in atuais.items():
+            if id_ticket not in anteriores and texto and _texto_parece_senha(texto, cfg):
+                log_msg(f"🆕 Senha nova na fila (id {id_ticket}): {texto}")
+    return set(atuais)
+
+
+def ler_token_driver(timeout=15.0):
+    """sessionStorage["tk"] da aba aberta (espera aparecer). "" quando não veio."""
+    fim = time.time() + timeout
+    while True:
+        try:
+            token = driver.execute_script(
+                "return sessionStorage.getItem('tk') || localStorage.getItem('tk') || '';")
+        except Exception as erro:
+            if _erro_chrome_morto(erro):
+                raise
+            token = ""
+        token = str(token or "").strip().strip('"')
+        if token or _ENCERRANDO or time.time() >= fim:
+            return token
+        time.sleep(0.5)
+
+
+def _quer_chrome_visivel():
+    """Painel visível (bandeja -> Mostrar) = o dono quer ver a Lista de Espera."""
+    return bool(is_visible) and not _HTTP["chrome_dispensado"]
+
+
+def obter_token_via_chrome(evitar=""):
+    """Abre o Chrome (se preciso), reaproveita a sessão ou faz o login e lê o token.
+    Fecha o Chrome no fim, a não ser que o painel esteja visível. "" = falhou."""
+    url_lista = carregar_credenciais()["url_lista_espera"]
+    try:
+        if driver is None or not chrome_vivo(ping=False)[0]:
+            _fechar_chrome()
+            if not _abrir_chrome():
+                return ""
+        abrir_lista_espera(url_lista)
+        if _sessao_ativa(driver):
+            token = ler_token_driver(timeout=8)
+            if _token_serve(token, evitar):
+                return token
+        if not fazer_login():
+            return ""
+        abrir_lista_espera(url_lista)
+        return ler_token_driver()
+    except Exception as erro:
+        log_msg(f"⚠️ Modo requisição: não consegui ler o token no Chrome ({type(erro).__name__}).")
+        return ""
+    finally:
+        if not _quer_chrome_visivel():
+            _fechar_chrome()
+
+
+def _sincronizar_chrome_painel(token):
+    """Painel oculto = Chrome fechado. Painel visível = Chrome maximizado na Lista de
+    Espera (regra 2.2.1), só para o dono ver; a busca continua por requisição.
+    Devolve o token (o novo, se a janela aberta trouxe outro)."""
+    if not is_visible:
+        _HTTP["chrome_dispensado"] = False
+    if driver is not None:
+        if not chrome_vivo(ping=False)[0]:
+            log_msg("🌐 O Chrome foi fechado — o modo requisição segue sem ele.")
+            _fechar_chrome()
+            _HTTP["chrome_dispensado"] = bool(is_visible)
+        elif not _quer_chrome_visivel():
+            log_msg("🌐 Chrome fechado (o modo requisição não precisa dele; abre de novo ao mostrar o painel).")
+            _fechar_chrome()
+        return token
+    if not _quer_chrome_visivel():
+        return token
+    log_msg("🖥️ Painel visível — abrindo o Chrome maximizado na Lista de Espera "
+            "(a busca continua por requisição).")
+    url_lista = carregar_credenciais()["url_lista_espera"]
+    try:
+        if not _abrir_chrome():
+            _HTTP["chrome_dispensado"] = True
+            return token
+        abrir_lista_espera(url_lista)
+        if not _sessao_ativa(driver):
+            _definir_etapa("login")
+            ok = fazer_login()
+            _definir_etapa("monitorando")
+            if not ok:
+                return token
+            abrir_lista_espera(url_lista)
+        novo = ler_token_driver(timeout=8)
+    except Exception as erro:
+        log_msg(f"⚠️ Não consegui abrir a Lista de Espera no Chrome ({type(erro).__name__}).")
+        return token
+    if novo and novo != token and validade_token(novo) >= validade_token(token):
+        _HTTP["token_exp"] = validade_token(novo)
+        return novo
+    return token
+
+
+def _reiniciar_pela_escada(motivo):
+    """N3 pelo mesmo caminho da 2.2.2 (reiniciar_processo: limite por hora).
+    Nunca com alarme/voz e nunca sem internet. True = reiniciou."""
+    if _ENCERRANDO:
+        return False
+    if alarme_ativo or _TRAVA_AUDIO.locked():
+        _avisar_recuperacao(f"⏳ [N3] Reinício do programa adiado: {motivo} — esperando o alarme/a fala terminar.")
+        return False
+    if not internet_ok():
+        _avisar_recuperacao("📴 [N3] Falhando, mas sem internet — não reinicio (espero a conexão voltar).",
+                            "offline", "Sem internet — aguardando")
+        return False
+    log_msg(f"🪜 [N3] Escada de recuperação (modo requisição): {motivo}. Reiniciando o programa inteiro.")
+    return reiniciar_processo(motivo)
+
+
+def _relogar_http(erro, token):
+    """Sessão expirada: reloga NA HORA. ("ok", novo) | ("falhou", token) | ("parar", token)."""
+    log_msg(f"🔐 [N1] Modo requisição: sessão do Feegow expirada ({erro}) — entrando de novo agora.")
+    if not _relogin_permitido():
+        return "parar", token
+    _definir_etapa("login")
+    _atualizar_status("recuperando", "Sessão caiu — entrando de novo...")
+    novo = obter_token_via_chrome(evitar=token)
+    if _CRED_RECUSADAS or credenciais_incompletas():
+        _definir_etapa("aguardando_login")
+        _atualizar_status("falha", "Login recusado — confira as credenciais")
+        return "parar", token
+    _definir_etapa("monitorando")
+    if novo and novo != token:
+        _HTTP["relogins_falhos"] = 0
+        _HTTP["token_exp"] = validade_token(novo)
+        log_msg("✔️ Relogin OK — repetindo a requisição.")
+        return "ok", novo
+    _HTTP["relogins_falhos"] += 1
+    falhos = _HTTP["relogins_falhos"]
+    log_msg(f"⚠️ O relogin não trouxe um token novo ({falhos}/{HTTP_MAX_RELOGINS_FALHOS} seguidos).")
+    if falhos >= HTTP_MAX_RELOGINS_FALHOS:
+        if _reiniciar_pela_escada(f"relogin falhou {falhos}x seguidas no modo requisição"):
+            return "parar", token
+    return "falhou", token
+
+
+def _descrever_erro_http(erro):
+    codigo = getattr(erro, "code", None)
+    if isinstance(codigo, int):
+        return f"HTTP {codigo}"
+    return f"{type(erro).__name__}: {str(erro)[:100]}"
+
+
+def sessao_modo_requisicao():
+    """Chamado logo depois do login (Chrome aberto e logado). Devolve como o
+    verificar_botao_chamar_senha (motivo para reabrir / None para parar) ou
+    VOLTAR_PARA_CHROME (usar o modo antigo nesta sessão)."""
+    token = ""
+    try:
+        abrir_lista_espera(carregar_credenciais()["url_lista_espera"])
+        token = ler_token_driver()
+    except Exception as erro:
+        log_msg(f"⚠️ Modo requisição: falha ao ler o token depois do login ({type(erro).__name__}).")
+    if not token:
+        log_msg("⚠️ Modo requisição: o token (sessionStorage 'tk') não apareceu depois do login — vou relogar.")
+    return laco_http(token)
+
+
+def laco_http(token):
+    """Laço do modo requisição. Recuperação:
+      * sessão expirada (401/403/SESSION_EXPIRED/HTML/token ausente) -> reloga na hora
+        e repete; 2 relogins seguidos sem token novo -> reinicia o programa (N3);
+      * rede/servidor (timeout, 5xx, 429) -> espera 10 -> 20 -> 40 -> 60 s, volta a
+        10 no primeiro sucesso; 3 min sem resposta boa -> reinicia o programa (N3);
+      * formato inesperado N vezes seguidas -> VOLTAR_PARA_CHROME;
+      * token a menos de 10 min de vencer -> renova antes."""
+    global _PEDIDO_RECARGA
+    cfg = carregar_filtros()
+    _HTTP.update(ativo=True, falhas_seguidas=0, formato_invalido=0, relogins_falhos=0,
+                 chrome_dispensado=False, token_exp=validade_token(token))
+    if token:
+        validade = (datetime.datetime.fromtimestamp(_HTTP["token_exp"]).strftime("%d/%m %H:%M")
+                    if _HTTP["token_exp"] else "?")
+        log_msg(f"🌐 Modo requisição ligado: a fila vem direto da API do Feegow a cada "
+                f"{cfg['intervalo_requisicao_seg']} s (token válido até {validade}). O Chrome fica "
+                "fechado e só abre para relogar ou ao mostrar o painel.")
+    token = _sincronizar_chrome_painel(token)
+    _definir_etapa("monitorando")
+    registrar_batimento(ok=False)
+    anteriores = None
+    ultimo_bom = time.time()
+    ultima_tentativa_n3 = 0.0
+    proxima_renovacao = 0.0
+    try:
+        while not _ENCERRANDO:
+            if _PEDIDO_REINICIO_CHROME:
+                return f"pedido do watchdog ({_PEDIDO_REINICIO_CHROME})"
+            _PEDIDO_RECARGA = False   # não há página para recarregar
+            cfg = carregar_filtros()
+            if cfg.get("modo_busca") != "http":
+                log_msg("🔁 modo_busca = 'chrome' no filtros.json — voltando ao método do Chrome.")
+                return VOLTAR_PARA_CHROME
+            base = cfg["intervalo_requisicao_seg"]
+
+            agora = time.time()
+            if agora - ultimo_bom >= HTTP_MAX_SEM_OK_SEGUNDOS and agora - ultima_tentativa_n3 >= 60:
+                ultima_tentativa_n3 = agora
+                if _reiniciar_pela_escada(f"modo requisição sem resposta boa há {int(agora - ultimo_bom)} s"):
+                    return None
+
+            token = _sincronizar_chrome_painel(token)
+            exp = validade_token(token)
+            if token and exp and exp - time.time() < HTTP_RENOVAR_ANTES_SEGUNDOS and time.time() >= proxima_renovacao:
+                log_msg("🔑 O token do Feegow vence em menos de 10 min — renovando agora.")
+                _definir_etapa("login")
+                novo = obter_token_via_chrome(evitar=token)
+                if _CRED_RECUSADAS:
+                    _definir_etapa("aguardando_login")
+                    return None
+                _definir_etapa("monitorando")
+                if novo:
+                    token = novo
+                    _HTTP["token_exp"] = validade_token(novo)
+                    log_msg("✔️ Token renovado.")
+                else:
+                    proxima_renovacao = time.time() + 120
+                    log_msg("⚠️ Não consegui renovar o token agora — sigo com o atual (se vencer, reloga).")
+
+            t0 = time.time()
+            try:
+                fila = http_buscar_fila(token)
+            except SessaoExpirada as erro:
+                acao, token = _relogar_http(erro, token)
+                if acao == "parar":
+                    return None
+                if acao == "falhou":
+                    _dormir(base, progresso=True)
+                continue
+            except FormatoInesperado as erro:
+                _HTTP["formato_invalido"] += 1
+                limite = cfg["http_ciclos_formato_invalido"]
+                log_msg(f"⚠️ Modo requisição: resposta da API fora do formato esperado ({erro}) — "
+                        f"{_HTTP['formato_invalido']}/{limite}.")
+                if _HTTP["formato_invalido"] >= limite:
+                    motivo = f"a API da fila mudou de formato ({erro})"
+                    _HTTP["desligado"] = motivo
+                    log_msg(f"🔁 {motivo}: voltando sozinho para o modo Chrome (clique no 'Chamar senha') "
+                            "até o próximo reinício do programa.")
+                    _avisar_bandeja("O Feegow mudou a resposta da fila de senhas. O monitor voltou para o "
+                                    "modo Chrome e continua funcionando.")
+                    return VOLTAR_PARA_CHROME
+                _dormir(base, progresso=True)
+                continue
+            except Exception as erro:
+                _HTTP["falhas_seguidas"] += 1
+                espera = espera_progressiva(base, _HTTP["falhas_seguidas"])
+                log_msg(f"⚠️ Modo requisição: falha de rede/servidor ({_descrever_erro_http(erro)}) — "
+                        f"{_HTTP['falhas_seguidas']} seguida(s), {int(time.time() - ultimo_bom)} s sem "
+                        f"resposta boa; nova tentativa em {int(espera)} s.")
+                _atualizar_status("recuperando", "Sem resposta do Feegow — tentando de novo")
+                if not internet_ok():
+                    aguardar_internet()
+                    ultimo_bom = time.time()   # o tempo sem internet não conta para o N3
+                    continue
+                _dormir(espera, progresso=True)
+                continue
+
+            ms = int((time.time() - t0) * 1000)
+            if _HTTP["falhas_seguidas"] or _HTTP["formato_invalido"]:
+                log_msg(f"✅ Modo requisição normalizado depois de "
+                        f"{_HTTP['falhas_seguidas'] + _HTTP['formato_invalido']} falha(s).")
+            _HTTP.update(falhas_seguidas=0, formato_invalido=0, relogins_falhos=0, ultimo_ms=ms)
+            _HTTP["ciclos_ok"] += 1
+            ultimo_bom = time.time()
+            anteriores = _registrar_ids_novos(fila, anteriores, cfg)
+            verificar_botao_explicacao(textos_da_fila(fila, cfg), fechar=False)
+            registrar_batimento(ok=True)
+            _atualizar_status("ok", "Conectado")
+
+            if not alarme_ativo and not dentro_do_horario(cfg):
+                return MOTIVO_FORA_HORARIO
+            _dormir(max(0.0, base - (time.time() - t0)))   # sequencial: nunca em paralelo
+        return None
+    finally:
+        _HTTP["ativo"] = False
+
+
 MOTIVO_FORA_HORARIO = "fora do horário de funcionamento"
 _RAM = {"medido_em": 0.0, "mb": 0}
 
@@ -3653,7 +4122,7 @@ PARAR_MONITORAMENTO = "__parar_monitoramento__"   # tratar_falha: encerra a sess
 
 def tratar_falha(estado, detalhe, falhas, url_lista):
     """Decide a recuperação. Devolve None (seguir) ou o motivo para reabrir o Chrome."""
-    global _ULTIMO_RELOAD_SEM_BOTAO, _RELOGIN_BLOQUEADO_ATE
+    global _ULTIMO_RELOAD_SEM_BOTAO
     if estado == "chrome_morto":
         return f"Chrome morto ({detalhe})"
 
@@ -3676,21 +4145,8 @@ def tratar_falha(estado, detalhe, falhas, url_lista):
         return None
 
     if estado == "login":
-        agora = time.time()
-        _RELOGINS[:] = [t for t in _RELOGINS if agora - t < 3600]
-        maximo = carregar_filtros().get("max_relogins_por_hora", 3)
-        if len(_RELOGINS) >= maximo:
-            _RELOGIN_BLOQUEADO_ATE = agora + 3600
-            log_msg(f"🛑 A sessão do Feegow caiu {len(_RELOGINS) + 1} vezes na última hora "
-                    f"(limite {maximo}). Outro PC usando o mesmo usuário? Parei de relogar para não "
-                    "ficar derrubando a outra máquina. Tento de novo em 60 min — ou salve o login "
-                    "na janela ⚙️ para tentar já.")
-            _atualizar_status("falha", "Sessão derrubada várias vezes — outro PC com o mesmo usuário?")
-            _avisar_bandeja("A sessão do Feegow foi derrubada várias vezes nesta hora. "
-                            "Outro PC está usando o mesmo usuário? O monitor parou de relogar por 60 min.")
-            _definir_etapa("aguardando_login")
+        if not _relogin_permitido():
             return PARAR_MONITORAMENTO
-        _RELOGINS.append(agora)
         log_msg(f"🔐 [N1] {detalhe}. Entrando de novo...")
         _definir_etapa("login")
         _atualizar_status("recuperando", "Sessão caiu — entrando de novo...")
@@ -3707,6 +4163,28 @@ def tratar_falha(estado, detalhe, falhas, url_lista):
         return None
 
     return f"{falhas} falhas seguidas ({estado}: {detalhe})"
+
+
+def _relogin_permitido():
+    """Conta um relogin por "sessão caiu". Passou de max_relogins_por_hora: para de
+    relogar por 60 min (outro PC com o mesmo usuário?) e devolve False."""
+    global _RELOGIN_BLOQUEADO_ATE
+    agora = time.time()
+    _RELOGINS[:] = [t for t in _RELOGINS if agora - t < 3600]
+    maximo = carregar_filtros().get("max_relogins_por_hora", 3)
+    if len(_RELOGINS) >= maximo:
+        _RELOGIN_BLOQUEADO_ATE = agora + 3600
+        log_msg(f"🛑 A sessão do Feegow caiu {len(_RELOGINS) + 1} vezes na última hora "
+                f"(limite {maximo}). Outro PC usando o mesmo usuário? Parei de relogar para não "
+                "ficar derrubando a outra máquina. Tento de novo em 60 min — ou salve o login "
+                "na janela ⚙️ para tentar já.")
+        _atualizar_status("falha", "Sessão derrubada várias vezes — outro PC com o mesmo usuário?")
+        _avisar_bandeja("A sessão do Feegow foi derrubada várias vezes nesta hora. "
+                        "Outro PC está usando o mesmo usuário? O monitor parou de relogar por 60 min.")
+        _definir_etapa("aguardando_login")
+        return False
+    _RELOGINS.append(agora)
+    return True
 
 
 def _recarregar_seguro(url_lista):
@@ -4175,6 +4653,13 @@ def montar_status():
         "ciclo_leve": {"ligado": not _CICLO_LEVE["desligado"], "ciclos_ok": _CICLO_LEVE["ok"],
                        "ultimo_ms": _CICLO_LEVE["ms"]},
         "chrome_ram_mb": _RAM["mb"],
+        "modo_busca": {"configurado": carregar_filtros().get("modo_busca", "http"),
+                       "em_uso": "http" if _HTTP["ativo"] else "chrome",
+                       "reserva_chrome": _HTTP["desligado"],
+                       "ciclos_ok": _HTTP["ciclos_ok"], "ultimo_ms": _HTTP["ultimo_ms"],
+                       "falhas_seguidas": _HTTP["falhas_seguidas"],
+                       "relogins_falhos": _HTTP["relogins_falhos"],
+                       "token_valido_ate": _HTTP["token_exp"]},
         "supervisionado": _supervisionado(),
         "reinicio_programado_min": carregar_filtros().get("reiniciar_a_cada_min", 0),
         "reinicio_adiado": _ADIAMENTO_REINICIO,
@@ -4270,7 +4755,8 @@ def _passo_watchdog(agora):
         return
 
     # N2 rápido: o Chrome/chromedriver do monitor sumiu (fechado, travou e morreu...)?
-    if _ETAPA in ("monitorando", "login") and not _PEDIDO_REINICIO_CHROME and driver is not None:
+    if (_ETAPA in ("monitorando", "login") and not _PEDIDO_REINICIO_CHROME and driver is not None
+            and not _HTTP["ativo"]):
         vivo, motivo_chrome = chrome_vivo(ping=False)
         if not vivo:
             _PEDIDO_REINICIO_CHROME = f"Chrome ausente: {motivo_chrome}"
