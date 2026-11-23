@@ -11,8 +11,8 @@
     }
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
-  "sha256_exe": "",
-  "notas": "Fala por filtro: Dilatacao fala 'Atencao! Senha de dilatacao', Lentes fala 'Nova Senha', MC sem voz; aba Falas nas configuracoes; migracao do filtros.json sem apagar personalizacoes.",
+  "sha256_exe": "2d3427899b4d506581c3695ca5a9230cde730f35924cf52a608d1f16998513f0",
+  "notas": "Fala por filtro: Dilatacao fala 'Atencao! Senha de dilatacao', Lentes fala 'Nova Senha', MC sem voz; aba Falas nas configuracoes; migracao do filtros.json sem apagar personalizacoes. Com exe.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "TMKbsX/n5tDB5yKun+uGM7IqFK2hravA7/rQOSf4mGeNtXaEsPIRUQMMTKKnubCYHqbvzU5Qq0HZhajVRy7HAw=="
+  "assinatura": "W0uvQveI2SjDzFhQQurKmm/j6NJE5paHHY40/4FC91LLPF4aybOirUdnC58Gb2F1/OX6SEYf4mAGiPCA/j7vCA=="
 }
