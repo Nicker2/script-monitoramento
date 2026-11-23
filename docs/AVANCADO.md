@@ -8,6 +8,7 @@
 - [Atualização automática](#atualização-automática)
 - [Áudio: só a saída padrão](#áudio-só-a-saída-padrão)
 - [Fala por filtro (2.2.0)](#fala-por-filtro-220)
+- [Janela do Chrome: maximizada ou do tamanho da tela (2.2.1)](#janela-do-chrome-maximizada-ou-do-tamanho-da-tela-221)
 - [Opções da 2.1.0](#opções-novas-da-210-filtrosjson--aba-sistema)
 - [Senha protegida (DPAPI)](#senha-protegida-dpapi)
 - [Assinatura das versões (como publicar)](#assinatura-das-versões-como-publicar)
@@ -111,6 +112,16 @@ Antes, a fala tocava em **todos** os dispositivos de som, um depois do outro (al
 **Migração (PCs que já tinham o monitor):** a atualização automática troca só o programa (`SCRIPT_EXPLICA.py` / `.exe` e o `iniciar_monitor.pyw`); o `filtros.json` de cada PC é preservado. Na primeira leitura pela 2.2.0, se o arquivo não tiver `falas_filtros`, os padrões acima são gravados nele (gravação atômica; o resto do arquivo não muda). Se a chave já existir, só os campos que faltam nos filtros conhecidos (`dilatacao`, `lentes`, `mc`, `r2`) são completados: nada personalizado é trocado e um filtro removido não volta. Filtro novo sem `fala`/`voz` lê a senha e fala, como antes. Se a 2.2.0 voltar para a 2.1.x (rollback), a chave nova é simplesmente ignorada.
 
 ---
+
+## Janela do Chrome: maximizada ou do tamanho da tela (2.2.1)
+
+A regra é: **visível = maximizada; escondida = do tamanho da tela real**. Nunca fica uma janela pequena, nem mostrando nem escondida, então a Lista de Espera do Feegow renderiza igual nos dois casos e os seletores funcionam em 1080p e em 720p.
+
+- **Escondida** (padrão, painel na bandeja): o Chrome abre fora da tela (`--window-position=-10000,-10000`, o "limbo" de sempre) com `--window-size` igual à resolução da tela principal, lida pelo `GetSystemMetrics` e dividida pela escala do Windows (o `--window-size` é em px CSS). Exemplos: 1920x1080 a 100% vira `1920,1080`; 1920x1080 a 125% vira `1536,864`; 1280x720 vira `1280,720`. **Mínimo de 1280x720**: acima do breakpoint `lg` (1200 px) do Bootstrap do Feegow o layout é sempre o de desktop. Se a tela não puder ser lida, usa o mínimo.
+- **Mostrar** (bandeja → Mostrar, clique no ícone, painel visível ao abrir ou depois de um reinício do Chrome/programa): a janela sai do limbo para a tela principal e é **maximizada** (`ShowWindow(SW_SHOWMAXIMIZED)`; reserva: `driver.maximize_window()`). Antes ela aparecia em 100,100 com 1024x768.
+- **Ocultar**: `ShowWindow(SW_HIDE)`, como antes. Se a janela foi restaurada e diminuída na mão, ela volta ao limbo com o tamanho da tela; maximizada, só é escondida (já tem o tamanho da tela).
+- O relogin não recria a janela, então o tamanho continua o mesmo. Reinício do Chrome e do programa passam pela abertura, que aplica a regra de novo.
+- O log de abertura mostra `🖥️ Janela do Chrome: escondida (1920x1080 px quando fora da tela).`
 
 ## Opções novas da 2.1.0 (`filtros.json` / aba Sistema)
 

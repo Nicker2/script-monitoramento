@@ -55,7 +55,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.2.0"
+VERSAO = "2.2.1"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -1497,6 +1497,84 @@ def _hwnd_chrome():
     return None
 
 
+# --- Tamanho da janela do Chrome (2.2.1) --------------------------------------
+# Visível = MAXIMIZADA. Escondida = do tamanho da tela real (1920x1080, 1280x720...),
+# nunca pequena: a Lista de Espera renderiza igual à visível e os seletores valem
+# nos dois casos. Abaixo de 1280x720 (px CSS) usa 1280x720: acima do breakpoint
+# "lg" (1200 px) do Bootstrap do Feegow, o layout é sempre o de desktop.
+TAMANHO_MINIMO_CHROME = (1280, 720)
+_SW_HIDE, _SW_SHOWMAXIMIZED = 0, 3
+_SWP_NOSIZE, _SWP_NOZORDER, _SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
+POSICAO_LIMBO_CHROME = (-10000, -10000)   # igual ao --window-position de ARGUMENTOS_CHROME
+
+
+def _user32():
+    return ctypes.windll.user32
+
+
+def resolucao_tela():
+    """(largura, altura, escala) da tela principal: pixels físicos e DPI/96."""
+    try:
+        u = _user32()
+        largura, altura = int(u.GetSystemMetrics(0)), int(u.GetSystemMetrics(1))
+    except Exception:
+        return 0, 0, 1.0
+    escala = 1.0
+    try:
+        dpi = int(u.GetDpiForSystem())
+        if dpi > 0:
+            escala = dpi / 96.0
+    except Exception:
+        pass
+    return largura, altura, escala
+
+
+def tamanho_janela_chrome(largura=None, altura=None, escala=None):
+    """Tamanho da janela escondida em px CSS (o que o --window-size usa): a tela
+    real dividida pela escala do Windows, nunca menor que TAMANHO_MINIMO_CHROME."""
+    if largura is None or altura is None:
+        largura, altura, escala_lida = resolucao_tela()
+        escala = escala if escala else escala_lida
+    escala = escala if escala and escala > 0 else 1.0
+    minimo_l, minimo_a = TAMANHO_MINIMO_CHROME
+    l = int(round((largura or 0) / escala))
+    a = int(round((altura or 0) / escala))
+    return max(l, minimo_l), max(a, minimo_a)
+
+
+def argumentos_janela_chrome(visivel, tamanho=None):
+    """Argumentos de janela do Chrome. Visível: maximizado (sem o "limbo").
+    Escondido: fora da tela com o tamanho da tela real (sem piscar na tela)."""
+    largura, altura = tamanho or tamanho_janela_chrome()
+    argumentos = [f"--window-size={largura},{altura}"]
+    if visivel:
+        argumentos.append("--start-maximized")
+    return argumentos
+
+
+def maximizar_chrome(hwnd):
+    """Mostra a janela do Chrome MAXIMIZADA. Se ela está no limbo (-10000), traz
+    para a tela principal antes; senão o Windows maximiza no monitor "mais perto"."""
+    u = _user32()
+    if not u.IsZoomed(hwnd):
+        u.SetWindowPos(hwnd, 0, 0, 0, 0, 0, _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE)
+    u.ShowWindow(hwnd, _SW_SHOWMAXIMIZED)
+
+
+def esconder_chrome(hwnd):
+    """Esconde o Chrome. Se não está maximizado (o usuário restaurou e diminuiu),
+    devolve ao limbo com o tamanho da tela real — nunca fica pequeno escondido.
+    Maximizado escondido já tem o tamanho da tela e fica como está."""
+    u = _user32()
+    u.ShowWindow(hwnd, _SW_HIDE)
+    if not u.IsZoomed(hwnd):
+        largura, altura, escala = resolucao_tela()
+        css_l, css_a = tamanho_janela_chrome(largura, altura, escala)
+        x, y = POSICAO_LIMBO_CHROME
+        u.SetWindowPos(hwnd, 0, x, y, int(round(css_l * escala)), int(round(css_a * escala)),
+                       _SWP_NOZORDER | _SWP_NOACTIVATE)
+
+
 def gerenciar_janelas(acao):
     global is_visible
     if acao == "ocultar":
@@ -1507,7 +1585,7 @@ def gerenciar_janelas(acao):
         hwnd = _hwnd_chrome()
         if hwnd:
             try:
-                ctypes.windll.user32.ShowWindow(hwnd, 0)
+                esconder_chrome(hwnd)
             except Exception:
                 pass
         is_visible = False
@@ -1523,8 +1601,7 @@ def gerenciar_janelas(acao):
         hwnd = _hwnd_chrome()
         if hwnd:
             try:
-                ctypes.windll.user32.ShowWindow(hwnd, 5)
-                ctypes.windll.user32.SetWindowPos(hwnd, 0, 100, 100, 1024, 768, 0x0040)
+                maximizar_chrome(hwnd)
             except Exception:
                 pass
         is_visible = True
@@ -2473,6 +2550,10 @@ def _abrir_chrome():
         _marcar_perfil_limpo(perfil_chrome)
 
     cfg = carregar_filtros()
+    abrir_visivel = _janela_visivel()
+    tamanho_janela = tamanho_janela_chrome()
+    log_msg(f"🖥️ Janela do Chrome: {'maximizada' if abrir_visivel else 'escondida'} "
+            f"({tamanho_janela[0]}x{tamanho_janela[1]} px quando fora da tela).")
 
     def montar_options(com_perfil=True, sem_sandbox=False):
         opcoes = webdriver.ChromeOptions()
@@ -2481,6 +2562,10 @@ def _abrir_chrome():
             prefs["profile.managed_default_content_settings.images"] = 2
         opcoes.add_experimental_option("prefs", prefs)
         for argumento in ARGUMENTOS_CHROME:
+            if abrir_visivel and argumento.startswith("--window-position"):
+                continue   # visível = maximizado na tela, não no limbo
+            opcoes.add_argument(argumento)
+        for argumento in argumentos_janela_chrome(abrir_visivel, tamanho_janela):
             opcoes.add_argument(argumento)
         if sem_sandbox:
             opcoes.add_argument(ARGUMENTO_SEM_SANDBOX)
@@ -2537,9 +2622,31 @@ def _abrir_chrome():
         log_msg(f"Navegador interceptado com sucesso pelo PID. HWND: {CHROME_HWND}")
         if not _janela_visivel():
             gerenciar_janelas("ocultar")
+        else:
+            _maximizar_chrome_aberto(CHROME_HWND)
     else:
         log_msg("ERRO: Não foi possível rastrear a janela do Chrome gerada.")
+        if _janela_visivel():
+            _maximizar_chrome_aberto(None)
     return True
+
+
+def _maximizar_chrome_aberto(hwnd):
+    """Painel visível na abertura/reinício: Chrome maximizado (Win32; reserva:
+    driver.maximize_window())."""
+    try:
+        if hwnd:
+            maximizar_chrome(hwnd)
+            return True
+    except Exception:
+        pass
+    try:
+        if driver is not None:
+            driver.maximize_window()
+            return True
+    except Exception as erro:
+        log_msg(f"⚠️ Não consegui maximizar o Chrome ({type(erro).__name__}).")
+    return False
 
 
 def _matar_chromedriver_por_pid():

@@ -2,6 +2,13 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.2.1 — Chrome maximizado quando visível
+
+- **Janela do Chrome visível = maximizada** (ao mostrar pela bandeja, ao abrir com o painel visível e depois de reiniciar o Chrome ou o programa). Antes ela aparecia com 1024x768 fixo.
+- **Escondida = do tamanho da tela real** (1920x1080, 1280x720 etc., já descontando a escala do Windows), com mínimo de 1280x720, para a página do Feegow renderizar igual à visível. O modo escondido continua o mesmo (fora da tela e fora da barra de tarefas).
+- Testes novos em `tests/test_janela_chrome.py` (maximizar ao mostrar, tamanho = resolução quando escondido, mínimo, escala 125%).
+- Detalhes em [AVANCADO.md](AVANCADO.md#janela-do-chrome-maximizada-ou-do-tamanho-da-tela-221).
+
 ### v2.2.0 — fala própria em cada filtro
 
 - **Cada filtro tem a sua fala e o seu liga/desliga da voz** (`falas_filtros` no `filtros.json`). Padrões: **Dilatação** fala sempre *"Atenção! Senha de dilatação"* (qualquer senha de dilatação, inclusive `AUTO REFRATOR (SEM DILATAR)`, sem ler a senha); **Lentes** fala *"Nova Senha"*; **Marcação MC** fica **sem voz** (a janela vermelha continua seguindo `alerta_tela`); **R2** continua lendo a senha.

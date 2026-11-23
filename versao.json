@@ -1,9 +1,9 @@
 {
-  "versao": "2.2.0",
+  "versao": "2.2.1",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "394df35b25e0a4d785568a9d0698d29b052166c5064cb601ac448cd554c4dac3",
-  "tamanho": 212923,
+  "sha256": "c0eab988105f7db607ef181dedce6394f11e0e33c515a2df86de0fed310e5b42",
+  "tamanho": 217173,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
       "sha256": "8d1a3967c5a4f66c96c6f89a8988af6953ba2c83445d141d3b39c98a1d4ddf7a",
@@ -11,8 +11,8 @@
     }
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
-  "sha256_exe": "2d3427899b4d506581c3695ca5a9230cde730f35924cf52a608d1f16998513f0",
-  "notas": "Fala por filtro: Dilatacao fala 'Atencao! Senha de dilatacao', Lentes fala 'Nova Senha', MC sem voz; aba Falas nas configuracoes; migracao do filtros.json sem apagar personalizacoes. Com exe.",
+  "sha256_exe": "",
+  "notas": "Chrome maximizado quando visivel; escondido com o tamanho da tela real (minimo 1280x720) para o Feegow renderizar igual em 1080p e 720p.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "W0uvQveI2SjDzFhQQurKmm/j6NJE5paHHY40/4FC91LLPF4aybOirUdnC58Gb2F1/OX6SEYf4mAGiPCA/j7vCA=="
+  "assinatura": "f/bHq0yeygNxn8FhXos7Dlhka0p1VMvx0mxGdImkARVumYqGyvEDSZvN7lfiL8pbs0mhA6J5cdrSvOFujL11DQ=="
 }
