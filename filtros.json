@@ -55,6 +55,7 @@
   "watchdog_recarregar_pagina_minutos": 30,
   "watchdog_reiniciar_chrome_horas": 0,
   "watchdog_max_reinicios_por_hora": 6,
+  "reiniciar_a_cada_min": 60,
   "auto_atualizar": true,
   "atualizacao_intervalo_minutos": 60,
   "atualizacao_canal": "main"

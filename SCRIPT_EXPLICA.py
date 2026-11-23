@@ -55,7 +55,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.1.1"
+VERSAO = "2.1.2"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -655,6 +655,8 @@ FILTROS_PADRAO = {
     "watchdog_recarregar_pagina_minutos": 30,
     "watchdog_reiniciar_chrome_horas": 0,
     "watchdog_max_reinicios_por_hora": 6,
+    # reinício programado do programa inteiro (Chrome + processo), em minutos (0 = desligado)
+    "reiniciar_a_cada_min": 60,
     # atualização automática pelo GitHub (versao.json)
     "auto_atualizar": True,
     "atualizacao_intervalo_minutos": 60,
@@ -829,6 +831,17 @@ def _para_int(valor, padrao, minimo=None, maximo=None):
     return numero
 
 
+REINICIO_PROGRAMADO_MINIMO_MIN = 10
+
+
+def _minutos_reinicio_programado(valor):
+    """reiniciar_a_cada_min: 0 desliga; valores de 1 a 9 viram 10 (não reinicia em loop)."""
+    minutos = _para_int(valor, 60, 0)
+    if 0 < minutos < REINICIO_PROGRAMADO_MINIMO_MIN:
+        minutos = REINICIO_PROGRAMADO_MINIMO_MIN
+    return minutos
+
+
 def _lista_normalizada(valor):
     if isinstance(valor, str):
         valor = [valor]
@@ -966,6 +979,7 @@ def carregar_filtros(forcar=False):
                 combinado.get("watchdog_reiniciar_chrome_horas"), 0, 0),
             "watchdog_max_reinicios_por_hora": _para_int(
                 combinado.get("watchdog_max_reinicios_por_hora"), 6, 1),
+            "reiniciar_a_cada_min": _minutos_reinicio_programado(combinado.get("reiniciar_a_cada_min")),
             "auto_atualizar": _para_bool(combinado.get("auto_atualizar"), True),
             "atualizacao_intervalo_minutos": _para_int(
                 combinado.get("atualizacao_intervalo_minutos"), 60, 10),
@@ -3561,12 +3575,93 @@ def reiniciar_processo(motivo, ignorar_limite=False):
         return False
     log_msg(f"🔁 [N3] Reiniciando o programa inteiro. Motivo: {motivo}")
     _ENCERRANDO = True
+    _salvar_pausa()   # a pausa do CIENTE continua valendo no processo novo
     # Antes (2.0.0) _limpeza_para_sair() terminava com os._exit(0): o processo
     # morria com código 0 ANTES de relançar e o supervisor entendia "usuário
     # encerrou" e saía também. Agora a limpeza só limpa; quem sai é o
     # relancar_processo_agora() (código 75 sob o supervisor).
     _limpeza_para_sair()
     relancar_processo_agora()
+    return True
+
+
+# --- Reinício programado (padrão: a cada 60 min) ---------------------------------
+# O watchdog confere a cada 15 s. Na hora, reinicia pelo MESMO caminho do nível 3
+# (reiniciar_processo -> _limpeza_para_sair -> relancar_processo_agora: código 75
+# sob o supervisor, ou nova instância sem ele). Nunca no meio de um alerta.
+ARQ_PAUSA = os.path.join(PASTA_LOGS, "pausa.json")
+_ADIAMENTO_REINICIO = ""   # último motivo de adiamento já logado (loga só quando muda)
+
+
+def decidir_reinicio_programado(cfg, inicio_processo, agora, alarme=False, falando=False,
+                                pausa_ate_ts=0.0):
+    """("nao", "") | ("adiar", motivo) | ("reiniciar", "reinicio programado (N min)")."""
+    minutos = cfg.get("reiniciar_a_cada_min") or 0
+    if not minutos or agora - inicio_processo < minutos * 60:
+        return "nao", ""
+    if alarme:
+        return "adiar", "alarme ativo (janela vermelha/voz)"
+    if falando:
+        return "adiar", "fala em andamento"
+    if pausa_ate_ts and agora < pausa_ate_ts:
+        return "adiar", "pausa do CIENTE"
+    return "reiniciar", f"reinicio programado ({minutos} min)"
+
+
+def _checar_reinicio_programado(agora):
+    """Chamado pelo watchdog. Adia enquanto houver alarme, fala ou pausa do CIENTE."""
+    global _ADIAMENTO_REINICIO
+    if _ENCERRANDO:
+        return False
+    cfg = carregar_filtros()
+    acao, motivo = decidir_reinicio_programado(
+        cfg, _INICIO_PROCESSO, agora, alarme=bool(alarme_ativo),
+        falando=_TRAVA_AUDIO.locked(), pausa_ate_ts=pausa_ate.timestamp())
+    if acao == "nao":
+        _ADIAMENTO_REINICIO = ""
+        return False
+    if acao == "adiar":
+        if _ADIAMENTO_REINICIO != motivo:
+            _ADIAMENTO_REINICIO = motivo
+            log_msg(f"⏳ reinicio programado ({cfg['reiniciar_a_cada_min']} min) adiado: {motivo}.")
+        return False
+    _ADIAMENTO_REINICIO = ""
+    log_msg(f"⏰ {motivo}")
+    reiniciar_processo(motivo, ignorar_limite=True)   # planejado: não gasta o limite de 4/h
+    return True
+
+
+def _salvar_pausa():
+    """Grava a pausa do CIENTE em logs/pausa.json (se estiver valendo) para o próximo processo."""
+    try:
+        restante = (pausa_ate - datetime.datetime.now()).total_seconds()
+        if restante > 0:
+            _gravar_json_atomico(ARQ_PAUSA, {"pausa_ate": pausa_ate.timestamp()}, indent=None)
+        elif os.path.isfile(ARQ_PAUSA):
+            os.remove(ARQ_PAUSA)
+    except Exception:
+        pass
+
+
+def restaurar_pausa(agora=None):
+    """Na inicialização: retoma a pausa do CIENTE gravada pelo processo anterior.
+    Ignora valor vencido ou maior que a pausa configurada (arquivo velho/editado)."""
+    global pausa_ate
+    agora = agora or time.time()
+    try:
+        with open(ARQ_PAUSA, "r", encoding="utf-8") as arquivo:
+            ate = float((json.load(arquivo) or {}).get("pausa_ate") or 0)
+    except Exception:
+        return False
+    try:
+        os.remove(ARQ_PAUSA)
+    except Exception:
+        pass
+    limite = carregar_filtros().get("pausa_minutos", 15) * 60 + 60
+    if not (agora < ate <= agora + limite):
+        return False
+    pausa_ate = datetime.datetime.fromtimestamp(ate)
+    log_msg(f"⏸️ Pausa do CIENTE retomada após o reinício (até {pausa_ate.strftime('%H:%M:%S')}).")
     return True
 
 
@@ -3595,6 +3690,8 @@ def montar_status():
                        "ultimo_ms": _CICLO_LEVE["ms"]},
         "chrome_ram_mb": _RAM["mb"],
         "supervisionado": _supervisionado(),
+        "reinicio_programado_min": carregar_filtros().get("reiniciar_a_cada_min", 0),
+        "reinicio_adiado": _ADIAMENTO_REINICIO,
     }
 
 
@@ -3657,6 +3754,7 @@ def thread_watchdog():
             ultimo_giro = agora
             _passo_watchdog(agora)
             _checar_confirmacao_por_tempo(agora)
+            _checar_reinicio_programado(agora)
         except Exception as e:
             log_msg(f"⚠️ Watchdog: erro interno ignorado ({type(e).__name__}: {e})")
 
@@ -4820,6 +4918,7 @@ if __name__ == "__main__":
     log_msg(f"▶️ Monitor de Senha v{VERSAO} iniciando (pasta: {PASTA_SCRIPT}"
             f"{', supervisionado' if _supervisionado() else ''}).")
     carregar_filtros(forcar=True)
+    restaurar_pausa()
     carregar_credenciais()
     pregerar_audios_em_segundo_plano()   # fora da thread principal (não trava a abertura)
 

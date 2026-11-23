@@ -1,9 +1,9 @@
 {
-  "versao": "2.1.1",
+  "versao": "2.1.2",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "0008e71547e54eb25d72a1f9767391e6d7625282051a4df5d58a2f789664d6fd",
-  "tamanho": 199377,
+  "sha256": "fe606b77656df3c29ddcb4fb9c8ec3ecc1921d68ac6d8f450c96c5262fd9cccb",
+  "tamanho": 203508,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
       "sha256": "8d1a3967c5a4f66c96c6f89a8988af6953ba2c83445d141d3b39c98a1d4ddf7a",
@@ -12,7 +12,7 @@
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "Login SSO: reenvia o login a cada 1,5s quando a Feegow acusa sessao dupla (antes esperava o handshake de 60s do site); repoe a senha na tela de conflito; senha errada aborta na hora.",
+  "notas": "Reinicio programado a cada 60 min (reiniciar_a_cada_min), adiado durante alerta/pausa do CIENTE; pausa sobrevive ao reinicio",
   "chave": "17a321dda4aa1060",
-  "assinatura": "jZp91A7J9m9DSeJBiOt89KEfL7HFc16/TPFaebo4dknlBOfFvNQACY1TqdKN85KQPcg+ntNbfD2qpRPPk+f8Bg=="
+  "assinatura": "Vszh8PI3FXUz/GZWpE3kJ0fZ63j8ZDFitLdqEb8aU1VvD+nnh2ah0fn7SkJjZ4wt7k6hxDBiVQEJnK/DBuxBAQ=="
 }

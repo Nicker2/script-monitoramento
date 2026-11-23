@@ -230,3 +230,54 @@ def test_exe_sem_sha_nao_atualiza_nem_da_erro(monitor, monkeypatch, tmp_path):
     monkeypatch.setattr(monitor, "consultar_versao_remota",
                         lambda: {"versao": "99.0.0", "sha256": "0" * 64, "sha256_exe": ""})
     assert monitor.verificar_atualizacao(manual=True) == "sem_exe"
+
+
+# --- reinício programado (2.1.2) ----------------------------------------------------------
+def test_reinicio_programado_regra(monitor):
+    decidir = monitor.decidir_reinicio_programado
+    cfg = {"reiniciar_a_cada_min": 60}
+    inicio = 1_000_000.0
+    assert monitor.FILTROS_PADRAO["reiniciar_a_cada_min"] == 60
+    assert decidir(cfg, inicio, inicio + 59 * 60) == ("nao", "")
+    assert decidir(cfg, inicio, inicio + 60 * 60) == ("reiniciar", "reinicio programado (60 min)")
+    # adia no meio de um alerta, de uma fala ou da pausa do CIENTE
+    passou = inicio + 61 * 60
+    assert decidir(cfg, inicio, passou, alarme=True)[0] == "adiar"
+    assert decidir(cfg, inicio, passou, falando=True)[0] == "adiar"
+    assert decidir(cfg, inicio, passou, pausa_ate_ts=passou + 300) == ("adiar", "pausa do CIENTE")
+    assert decidir(cfg, inicio, passou, pausa_ate_ts=passou - 1)[0] == "reiniciar"   # pausa vencida
+    # 0 desliga; 1..9 vira 10; texto/None tolerados
+    assert decidir({"reiniciar_a_cada_min": 0}, inicio, inicio + 99 * 3600) == ("nao", "")
+    assert monitor._minutos_reinicio_programado(0) == 0
+    assert monitor._minutos_reinicio_programado(3) == 10
+    assert monitor._minutos_reinicio_programado("90") == 90
+    assert monitor._minutos_reinicio_programado(None) == 60
+
+
+def test_reinicio_programado_usa_reiniciar_processo(monitor, monkeypatch, tmp_path):
+    chamadas = []
+    monkeypatch.setattr(monitor, "reiniciar_processo", lambda motivo, ignorar_limite=False:
+                        chamadas.append((motivo, ignorar_limite)))
+    monkeypatch.setattr(monitor, "carregar_filtros", lambda forcar=False: dict(
+        monitor.FILTROS_PADRAO, reiniciar_a_cada_min=60))
+    monkeypatch.setattr(monitor, "_INICIO_PROCESSO", time.time() - 3700)
+    monkeypatch.setattr(monitor, "pausa_ate", dt.datetime.now() - dt.timedelta(minutes=1))
+    monkeypatch.setattr(monitor, "alarme_ativo", True)
+    assert monitor._checar_reinicio_programado(time.time()) is False and chamadas == []
+    monkeypatch.setattr(monitor, "alarme_ativo", False)
+    assert monitor._checar_reinicio_programado(time.time()) is True
+    assert chamadas == [("reinicio programado (60 min)", True)]
+
+
+def test_pausa_do_ciente_sobrevive_ao_reinicio(monitor, monkeypatch, tmp_path):
+    monkeypatch.setattr(monitor, "ARQ_PAUSA", str(tmp_path / "pausa.json"))
+    ate = dt.datetime.now() + dt.timedelta(minutes=10)
+    monkeypatch.setattr(monitor, "pausa_ate", ate)
+    monitor._salvar_pausa()
+    monkeypatch.setattr(monitor, "pausa_ate", dt.datetime.now() - dt.timedelta(minutes=1))
+    assert monitor.restaurar_pausa() is True
+    assert abs(monitor.pausa_ate.timestamp() - ate.timestamp()) < 1
+    assert not (tmp_path / "pausa.json").exists()
+    # vencida ou absurda (maior que a pausa configurada) é ignorada
+    (tmp_path / "pausa.json").write_text(json.dumps({"pausa_ate": time.time() + 86400}))
+    assert monitor.restaurar_pausa() is False
