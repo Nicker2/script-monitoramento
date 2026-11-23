@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="Monitor de Senha Feegow">
+  <defs>
+    <linearGradient id="fundo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e3a5f"/>
+    </linearGradient>
+    <linearGradient id="sino" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="300" rx="24" fill="url(#fundo)"/>
+
+  <!-- ondas de alerta -->
+  <g fill="none" stroke="#fbbf24" stroke-linecap="round" opacity="0.55">
+    <path d="M118 108 a70 70 0 0 0 0 94" stroke-width="6"/>
+    <path d="M96 88 a100 100 0 0 0 0 134" stroke-width="5" opacity="0.6"/>
+    <path d="M262 108 a70 70 0 0 1 0 94" stroke-width="6"/>
+    <path d="M284 88 a100 100 0 0 1 0 134" stroke-width="5" opacity="0.6"/>
+  </g>
+
+  <!-- sino -->
+  <g transform="translate(190 155)">
+    <path d="M-48 38 C-40 26 -38 10 -38 -10 C-38 -36 -22 -54 0 -56 C22 -54 38 -36 38 -10 C38 10 40 26 48 38 Z" fill="url(#sino)"/>
+    <rect x="-56" y="36" width="112" height="12" rx="6" fill="#f59e0b"/>
+    <circle cx="0" cy="60" r="11" fill="#fbbf24"/>
+    <circle cx="0" cy="-60" r="7" fill="#fbbf24"/>
+  </g>
+
+  <!-- textos -->
+  <text x="350" y="138" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="58" font-weight="700" fill="#f8fafc">Monitor de Senha Feegow</text>
+  <text x="352" y="186" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="26" fill="#cbd5e1">Avisa por voz e na tela quando a senha certa entra na fila.</text>
+
+  <!-- etiquetas -->
+  <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="18" font-weight="600">
+    <rect x="352" y="214" width="150" height="36" rx="18" fill="#334155"/>
+    <text x="427" y="238" text-anchor="middle" fill="#e2e8f0">Voz pt-BR</text>
+    <rect x="514" y="214" width="190" height="36" rx="18" fill="#334155"/>
+    <text x="609" y="238" text-anchor="middle" fill="#e2e8f0">Auto-recuperação</text>
+    <rect x="716" y="214" width="196" height="36" rx="18" fill="#334155"/>
+    <text x="814" y="238" text-anchor="middle" fill="#e2e8f0">Atualiza sozinho</text>
+    <rect x="924" y="214" width="170" height="36" rx="18" fill="#334155"/>
+    <text x="1009" y="238" text-anchor="middle" fill="#e2e8f0">Windows</text>
+  </g>
+</svg>
