@@ -56,7 +56,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.3.0"
+VERSAO = "2.3.1"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -3855,10 +3855,10 @@ def _reiniciar_pela_escada(motivo):
 
 
 def _relogar_http(erro, token):
-    """Sessão expirada: reloga NA HORA. ("ok", novo) | ("falhou", token) | ("parar", token)."""
+    """Sessão expirada: reloga SEMPRE na hora (sem limite por hora, decisão do dono na
+    2.3.1). A única proteção é a escada: 2 relogins falhos seguidos -> reinício.
+    ("ok", novo) | ("falhou", token) | ("parar", token)."""
     log_msg(f"🔐 [N1] Modo requisição: sessão do Feegow expirada ({erro}) — entrando de novo agora.")
-    if not _relogin_permitido():
-        return "parar", token
     _definir_etapa("login")
     _atualizar_status("recuperando", "Sessão caiu — entrando de novo...")
     novo = obter_token_via_chrome(evitar=token)

@@ -39,7 +39,7 @@ x-access-token: <token do login>
 
 | Situação | O que o monitor faz |
 |---|---|
-| Sessão expirada: HTTP 401/403, `{"code":"SESSION_EXPIRED"}`, HTML ou tela de login no lugar do JSON, token ausente | **Reloga na hora** (abre o Chrome escondido, entra, lê o token novo, fecha) e repete a requisição, sem esperar. Vale o limite de `max_relogins_por_hora` (3): se a sessão cair mais que isso numa hora (outro PC com o mesmo usuário?), para de relogar por 60 min, como no modo Chrome. |
+| Sessão expirada: HTTP 401/403, `{"code":"SESSION_EXPIRED"}`, HTML ou tela de login no lugar do JSON, token ausente | **Reloga na hora** (abre o Chrome escondido, entra, lê o token novo, fecha) e repete a requisição, sem esperar. **Sempre**, sem limite por hora (desde a 2.3.1; o `max_relogins_por_hora` só vale no modo Chrome). A única proteção é a linha de baixo. |
 | Relogin falhou **2 vezes seguidas** | **Reinicia o programa inteiro** pelo caminho da escada 2.2.2 (`reiniciar_processo`): no máximo 5 por hora (depois segura 10 min), nunca com a janela vermelha aberta ou a voz falando, nunca sem internet. |
 | Rede/servidor: timeout, HTTP 5xx, 429 | Espera **10 → 20 → 40 → 60 s** (teto) e volta a 10 s no primeiro sucesso. Sem internet, espera a conexão voltar (não conta como falha). |
 | **3 min sem nenhuma resposta boa** | Reinicia o programa inteiro (mesmo caminho e mesmos limites acima). O watchdog também confere isso (`recuperacao_min_sem_ok`). |

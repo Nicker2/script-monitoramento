@@ -2,6 +2,12 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.3.1 — modo requisição reloga sempre
+
+- **Sem limite de relogins por hora no modo requisição:** sessão expirada = reloga sempre na hora. Saiu o limite de 3 relogins por hora e a pausa de 60 min ("outro PC com o mesmo usuário?") que a 2.3.0 herdou do modo Chrome. A única proteção é a escada: 2 relogins seguidos sem token novo = reinicia o programa (até 5 por hora, nunca durante alarme ou voz). No modo Chrome o `max_relogins_por_hora` continua valendo.
+- Teste novo: 5 sessões expiradas seguidas = 5 relogins, sem parar e sem reiniciar.
+- Publicada só como `.py` (sem `.exe`): os PCs que usam o `.exe` continuam na 2.2.0.
+
 ### v2.3.0 — modo requisição: a fila vem direto da API do Feegow
 
 - **Novo padrão `"modo_busca": "http"`.** O login continua pelo Chrome (Selenium); depois o monitor lê o token do login (`sessionStorage["tk"]`), **fecha o Chrome** e pede a fila a `core.feegow.com/totem-queue/admin/get-queue-by-filter` com o header `x-access-token`, uma requisição a cada `intervalo_requisicao_seg` (padrão 10 s), sempre uma de cada vez. Menos RAM e CPU, e nenhuma dependência da página, do modal ou do clique.

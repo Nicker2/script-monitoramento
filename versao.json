@@ -1,9 +1,9 @@
 {
-  "versao": "2.3.0",
+  "versao": "2.3.1",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "d67f23ec555906d4408497ad0e65cb39b785bc893b2e944648c2da3e4c2e3d93",
-  "tamanho": 254683,
+  "sha256": "583737afdfe3c1d04be0d90b41ea8e397bb232b6fb6ab0a4bbef8bf2491314de",
+  "tamanho": 254758,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
       "sha256": "4fa73ba2899f2126cc77b2e8a93fac6c6f387a026e938a65a1872d7430fe8308",
@@ -12,7 +12,7 @@
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "Modo requisicao: depois do login le o token e consulta a fila direto na API do Feegow a cada 10 s com o Chrome fechado; alerta identico; sessao expirada -> reloga na hora (2 falhas -> reinicia); 5xx/timeout -> espera 10/20/40/60 s; 3 min sem OK -> reinicia; API mudou -> volta sozinho ao modo Chrome. modo_busca=chrome forca o modo antigo.",
+  "notas": "Modo requisicao: sessao expirada reloga sempre na hora (sem limite de 3 relogins/h nem pausa de 60 min); protecao so pela escada: 2 relogins falhos seguidos -> reinicia o programa (max 5/h, nunca durante alarme).",
   "chave": "17a321dda4aa1060",
-  "assinatura": "56eojR5HmBE7VSjUZuXYGn7JOCA/o3te52ON2T1CxxF4eRcbvSeYapMQFHoXdalc7LpOaYkd0ZmnFi5S46NyDA=="
+  "assinatura": "4BaoY8sah+f6CGRcBrtFt3cnqzDfjoMrssU2UqpvqB8tIYUazam4IFBbdPuX8egwfpUtScUREKesb04y+m+0CA=="
 }

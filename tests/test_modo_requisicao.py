@@ -422,3 +422,16 @@ def test_filtros_json_do_repo_tem_modo_requisicao():
     with open(os.path.join(RAIZ, "filtros.json"), encoding="utf-8") as arquivo:
         dados = json.load(arquivo)
     assert dados["modo_busca"] == "http" and dados["intervalo_requisicao_seg"] == 10
+
+
+def test_sem_limite_de_relogins_por_hora(monitor, amb, monkeypatch):
+    """2.3.1: sessão expirada reloga SEMPRE na hora (sem o limite de 3/h nem a pausa de 60 min)."""
+    tokens = [_jwt(time.time() + 12 * 3600 + i) for i in range(1, 7)]
+    amb["novo_token"][:] = list(tokens)
+    monkeypatch.setattr(monitor, "_RELOGINS", [time.time()] * 10)   # já "estourado" pela regra antiga
+    amb["api"].roteiro = [("status", 401, {"code": "SESSION_EXPIRED"})] * 5 + [("json", [])]
+    assert monitor.laco_http(TOKEN_A) is None
+    assert len(amb["tokens_pedidos"]) == 5 and amb["reinicios"] == []
+    assert amb["api"].tokens == [TOKEN_A] + tokens[:5]
+    assert monitor._ETAPA != "aguardando_login" and amb["batimentos"].count(True) == 1
+    assert not any("Parei de relogar" in l for l in amb["logs"])
