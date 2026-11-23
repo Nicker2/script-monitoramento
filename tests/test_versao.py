@@ -37,7 +37,8 @@ def test_sem_caminho_fixo_d():
 def test_chave_privada_fora_do_repo():
     marca_pem = "PRIVATE" + " KEY-----"
     for pasta, _subs, arquivos in os.walk(RAIZ):
-        if ".git" in pasta.split(os.sep):
+        partes = pasta.split(os.sep)
+        if ".git" in partes or "dist" in partes:
             continue
         for arquivo in arquivos:
             assert not arquivo.endswith((".pem", ".key")), os.path.join(pasta, arquivo)

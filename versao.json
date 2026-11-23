@@ -11,8 +11,8 @@
     }
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
-  "sha256_exe": "",
-  "notas": "Reinicio programado a cada 60 min (reiniciar_a_cada_min), adiado durante alerta/pausa do CIENTE; pausa sobrevive ao reinicio",
+  "sha256_exe": "e2d122f54e004df633099287859eb6bfd4a5bfb2382d6eb689405174b660900a",
+  "notas": "Login SSO: reenvia o login a cada 1,5s quando a Feegow acusa sessao dupla; repoe a senha na tela de conflito; senha errada aborta na hora.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "Vszh8PI3FXUz/GZWpE3kJ0fZ63j8ZDFitLdqEb8aU1VvD+nnh2ah0fn7SkJjZ4wt7k6hxDBiVQEJnK/DBuxBAQ=="
+  "assinatura": "5pbrXOlYtSSRqGIQrPqu8ZIoUbCIeutaRNcbNDNXfmCNbiH51+xKPEYr7WG0bo+BEx5jykgw3P2Z6VFlv99QDQ=="
 }
