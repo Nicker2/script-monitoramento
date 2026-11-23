@@ -7,6 +7,7 @@
 - [Watchdog (auto-recuperação)](#watchdog-auto-recuperação)
 - [Atualização automática](#atualização-automática)
 - [Áudio: só a saída padrão](#áudio-só-a-saída-padrão)
+- [Fala por filtro (2.2.0)](#fala-por-filtro-220)
 - [Opções da 2.1.0](#opções-novas-da-210-filtrosjson--aba-sistema)
 - [Senha protegida (DPAPI)](#senha-protegida-dpapi)
 - [Assinatura das versões (como publicar)](#assinatura-das-versões-como-publicar)
@@ -83,6 +84,32 @@ Antes, a fala tocava em **todos** os dispositivos de som, um depois do outro (al
 - `"anti_repeticao_segundos": 60` — a mesma senha não é anunciada de novo dentro dessa janela (por exemplo, quando o alarme é desarmado pelo tempo máximo e a senha continua na tela). `0` desliga. As repetições do **mesmo** alarme (`intervalo_repeticao_segundos`) continuam normais.
 - Uma fala por vez (trava interna) e **um monitor por PC** (instância única): duas cópias abertas não falam ao mesmo tempo.
 
+## Fala por filtro (2.2.0)
+
+`falas_filtros` no `filtros.json` (ou aba **⚙️ Configurações → Falas**) define o que a voz fala em cada filtro. Quando uma senha alerta, o texto dela é comparado com os `termos` de cada filtro, **na ordem do arquivo**; o primeiro que casar decide a fala. Senha que não cai em nenhum filtro fala como antes (*"Atenção! Senha ..."*).
+
+```json
+"falas_filtros": {
+  "dilatacao": {"nome": "Dilatação", "termos": ["DILATAÇÃO", "DILATACAO", "AUTO REFRATOR"],
+                "comparacao": "contem", "fala": "Atenção! Senha de dilatação", "voz": true},
+  "lentes": {"nome": "Lentes", "termos": ["LENTES"], "comparacao": "contem", "fala": "Nova Senha", "voz": true},
+  "mc":     {"nome": "Marcação MC", "termos": ["MC"], "comparacao": "exata", "fala": "", "voz": false},
+  "r2":     {"nome": "R2", "termos": ["R2"], "comparacao": "contem", "fala": "", "voz": true}
+}
+```
+
+| Campo | O que faz |
+| :--- | :--- |
+| `termos` | Textos comparados com a senha (sem acento, maiúsculas, como nas listas). |
+| `comparacao` | `contem` ou `exata`. O MC usa `exata` para `DILATAÇÃO - CMC` não cair nele. |
+| `fala` | Frase falada. Vazia = fala a senha da tela. |
+| `voz` | `false` = não fala nesse filtro. A janela vermelha continua seguindo `alerta_tela`. **Com `alerta_tela` desligado e `voz` desligada, a chamada não gera alerta nenhum** (o log avisa). |
+| `nome` | Nome mostrado na aba Falas e no log. |
+
+`alerta_voz` continua sendo o liga/desliga geral. O anti-repetição, o intervalo entre repetições e o cache de áudio funcionam igual; as frases novas são pré-geradas no cache como as outras.
+
+**Migração (PCs que já tinham o monitor):** a atualização automática troca só o programa (`SCRIPT_EXPLICA.py` / `.exe` e o `iniciar_monitor.pyw`); o `filtros.json` de cada PC é preservado. Na primeira leitura pela 2.2.0, se o arquivo não tiver `falas_filtros`, os padrões acima são gravados nele (gravação atômica; o resto do arquivo não muda). Se a chave já existir, só os campos que faltam nos filtros conhecidos (`dilatacao`, `lentes`, `mc`, `r2`) são completados: nada personalizado é trocado e um filtro removido não volta. Filtro novo sem `fala`/`voz` lê a senha e fala, como antes. Se a 2.2.0 voltar para a 2.1.x (rollback), a chave nova é simplesmente ignorada.
+
 ---
 
 ## Opções novas da 2.1.0 (`filtros.json` / aba Sistema)
@@ -130,7 +157,7 @@ Desligado por padrão. Com `heartbeat_remoto_url` preenchida (só `https://`), c
 
 ## Testes
 
-- `python -m pytest tests` — unidade (filtros, horário, reinício diário, textos do alarme, assinatura com vetores do RFC 8032, DPAPI, heartbeat, reinício que não sai com código 0), conferência do `versao.json` e o supervisor de verdade com um monitor falso (código 75, queda, heartbeat parado).
+- `python -m pytest tests` — unidade (filtros, fala por filtro e migração do `filtros.json`, horário, reinício diário, textos do alarme, assinatura com vetores do RFC 8032, DPAPI, heartbeat, reinício que não sai com código 0), conferência do `versao.json` e o supervisor de verdade com um monitor falso (código 75, queda, heartbeat parado).
 - `MONITOR_TESTES_CHROME=1 python -m pytest tests -k harness -s` (ou `python tests/harness/teste_monitor.py`) — bateria completa com Chrome headless e um **Feegow simulado local** (127.0.0.1, nunca o Feegow real), incluindo supervisor + monitor reais reiniciando e voltando a monitorar.
 - O GitHub Actions (`.github/workflows/ci.yml`, `windows-latest`) roda `py_compile`, `gerar_versao.py --verificar` e o `pytest` a cada push.
 

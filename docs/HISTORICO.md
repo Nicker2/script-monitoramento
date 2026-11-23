@@ -2,6 +2,14 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.2.0 — fala própria em cada filtro
+
+- **Cada filtro tem a sua fala e o seu liga/desliga da voz** (`falas_filtros` no `filtros.json`). Padrões: **Dilatação** fala sempre *"Atenção! Senha de dilatação"* (qualquer senha de dilatação, inclusive `AUTO REFRATOR (SEM DILATAR)`, sem ler a senha); **Lentes** fala *"Nova Senha"*; **Marcação MC** fica **sem voz** (a janela vermelha continua seguindo `alerta_tela`); **R2** continua lendo a senha.
+- **Aba nova ⚙️ Configurações → Falas:** para cada filtro, as senhas/termos, o campo **Fala**, a caixa **Falar em voz alta** e um botão **▶ Testar**. O **💾 Salvar** grava no `filtros.json` e vale na hora, sem reiniciar.
+- **Migração automática nos PCs que já tinham o monitor:** na primeira leitura do `filtros.json` pela 2.2.0, se não existir `falas_filtros`, os padrões acima são gravados no arquivo (o resto fica como estava). Se já existir, só os campos que faltam são completados; fala, voz e termos personalizados não são trocados, e um filtro tirado de propósito não volta. O log mostra `🗣️ filtros.json: falas por filtro adicionadas`.
+- A chave `alerta_voz` (aba Alertas) continua sendo o liga/desliga geral: desligada, nenhum filtro fala.
+- Testes novos em `tests/test_falas.py` (fala por filtro, MC sem voz, `CMC` não cai no MC, migração e compatibilidade).
+
 ### v2.1.2 — reinício programado a cada 60 min
 
 - **O programa inteiro se reinicia sozinho a cada 60 min** (`reiniciar_a_cada_min` no `filtros.json`; `0` desliga, valores de 1 a 9 viram 10). Usa o mesmo caminho do nível 3 do watchdog: fecha o Chrome e o chromedriver, deixa o perfil limpo e relança (código 75 para o supervisor, ou uma instância nova quando não há supervisor). Continua um processo só, com o ícone na bandeja.

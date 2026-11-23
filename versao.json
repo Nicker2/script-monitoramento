@@ -1,9 +1,9 @@
 {
-  "versao": "2.1.2",
+  "versao": "2.2.0",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "fe606b77656df3c29ddcb4fb9c8ec3ecc1921d68ac6d8f450c96c5262fd9cccb",
-  "tamanho": 203508,
+  "sha256": "394df35b25e0a4d785568a9d0698d29b052166c5064cb601ac448cd554c4dac3",
+  "tamanho": 212923,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
       "sha256": "8d1a3967c5a4f66c96c6f89a8988af6953ba2c83445d141d3b39c98a1d4ddf7a",
@@ -11,8 +11,8 @@
     }
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
-  "sha256_exe": "e2d122f54e004df633099287859eb6bfd4a5bfb2382d6eb689405174b660900a",
-  "notas": "Login SSO: reenvia o login a cada 1,5s quando a Feegow acusa sessao dupla; repoe a senha na tela de conflito; senha errada aborta na hora.",
+  "sha256_exe": "",
+  "notas": "Fala por filtro: Dilatacao fala 'Atencao! Senha de dilatacao', Lentes fala 'Nova Senha', MC sem voz; aba Falas nas configuracoes; migracao do filtros.json sem apagar personalizacoes.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "5pbrXOlYtSSRqGIQrPqu8ZIoUbCIeutaRNcbNDNXfmCNbiH51+xKPEYr7WG0bo+BEx5jykgw3P2Z6VFlv99QDQ=="
+  "assinatura": "TMKbsX/n5tDB5yKun+uGM7IqFK2hravA7/rQOSf4mGeNtXaEsPIRUQMMTKKnubCYHqbvzU5Qq0HZhajVRy7HAw=="
 }

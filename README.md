@@ -54,7 +54,7 @@ O script abre o Feegow num Chrome controlado pelo Selenium, entra na **Lista de 
 
 | | Recurso | Em poucas palavras |
 | :---: | :--- | :--- |
-| 🔊 | **Alerta por voz** | Fala em português ("Atenção! Senha DILATAÇÃO - CCC.") na saída de som padrão do Windows. Sem internet, usa a voz do Windows; sem nenhuma voz, toca um bipe. |
+| 🔊 | **Alerta por voz** | Fala em português na saída de som padrão do Windows, com **fala própria por filtro** (Dilatação: "Atenção! Senha de dilatação"; Lentes: "Nova Senha"; MC: sem voz). Senha fora dos filtros: "Atenção! Senha ...". Sem internet, usa a voz do Windows; sem nenhuma voz, toca um bipe. |
 | 🚨 | **Janela piscante** | Janela vermelha no centro da tela com o botão **CIENTE** (Enter, Espaço ou Esc também servem). Pode ser ligada ou desligada. |
 | 🎯 | **Filtros por lista** | `whitelist` = alertar, `blacklist` = ignorar (a whitelist vence). Ignora acentos e maiúsculas. Avalia **todos** os tickets do modal, não só o primeiro. |
 | ⚡ | **Padrões prontos** | Um clique troca o filtro: 🩺 Dilatação, 👓 Lentes, 🔔 MC, 🎫 R2. O filtro anterior vai para `filtros.backup.json`. |
@@ -180,6 +180,7 @@ O jeito mais fácil é pelo painel: ícone da bandeja → Mostrar → **⚙️ C
 | **Senhas** | Listas ✅ **ALERTAR** (whitelist) e 🚫 **IGNORAR** (blacklist) e os botões ⚡ **Padrões prontos**. |
 | **Login** | Usuário, senha (com "mostrar senha") e rota (`auto` / `sso` / `legado`). Trocar o login reabre o navegador sozinho. |
 | **Alertas** | Janela e voz liga/desliga, pausa, intervalo, saída de som e anti-repetição. |
+| **Falas** | Para cada filtro (Dilatação, Lentes, Marcação MC, R2): senhas/termos, o texto da **Fala**, a caixa **Falar em voz alta** e **▶ Testar**. Fala vazia = lê a senha da tela. |
 | **Sistema** | Versão, atualização automática, watchdog, limites do Chrome, heartbeat remoto e os botões **Procurar atualização agora**, **Abrir pasta de logs** e **📋 Copiar diagnóstico** (sem segredos, e-mails mascarados). |
 
 O **💾 Salvar** grava em `filtros.json` e `credenciais.json`, e vale na hora. Também dá para editar o `filtros.json` à mão: ao salvar o arquivo, o monitor recarrega sozinho.
@@ -193,7 +194,8 @@ O **💾 Salvar** grava em `filtros.json` e `credenciais.json`, e vale na hora. 
 | `padrao_sem_match` | `"ignorar"` | O que fazer com senha fora das duas listas (`alertar` ou `ignorar`). |
 | `comparacao` | `"contem"` | `contem` ou `exata` (use `exata` para `MC` não pegar `DILATAÇÃO - CMC`). |
 | `termos_gatilho` | lista | Textos usados para achar os botões no modal. Atualizado sozinho quando você adiciona senhas pela tela. |
-| `alerta_voz` | `true` | Liga/desliga a fala. |
+| `alerta_voz` | `true` | Liga/desliga a fala (geral). |
+| `falas_filtros` | Dilatação, Lentes, MC, R2 | Fala e voz de cada filtro: `{"termos": [...], "comparacao": "contem", "fala": "...", "voz": true}`. Padrões: Dilatação = "Atenção! Senha de dilatação", Lentes = "Nova Senha", MC = `"voz": false`, R2 = lê a senha. Ver [docs/AVANCADO.md](docs/AVANCADO.md#fala-por-filtro-220). |
 | `alerta_tela` | `false` (no `filtros.json` do repositório) | Liga/desliga a janela vermelha piscante. |
 | `pausa_minutos` | `15` | Silêncio depois do CIENTE. |
 | `intervalo_busca_segundos` | `10` | Intervalo entre as verificações. |
@@ -228,7 +230,7 @@ Criado na primeira execução a partir do [`credenciais.exemplo.json`](credencia
 **Topo do painel:**
 
 ```
-● Conectado | último OK há 8s | v2.1.1
+● Conectado | último OK há 8s | v2.2.0
 ```
 
 **Linhas do `logs/monitor.log`** (um `🔎` por ticket do modal; as listas aparecem normalizadas, sem acento nem hífen):

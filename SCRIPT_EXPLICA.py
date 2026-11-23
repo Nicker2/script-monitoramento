@@ -55,7 +55,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.1.2"
+VERSAO = "2.2.0"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -650,6 +650,20 @@ FILTROS_PADRAO = {
     # "todos" = toca em cada dispositivo, ou o nome exato de um dispositivo.
     "saida_audio": "padrao",
     "anti_repeticao_segundos": 60,
+    # fala por filtro (desde a 2.2.0): a senha que alertou é comparada com os
+    # "termos" de cada filtro, na ordem; o primeiro que casar decide a fala.
+    # "fala" vazia = fala a senha da tela ("Atenção! Senha ..."); "voz": false =
+    # não fala (a janela vermelha continua valendo, se alerta_tela estiver ligado).
+    "falas_filtros": {
+        "dilatacao": {"nome": "Dilatação", "termos": ["DILATAÇÃO", "DILATACAO", "AUTO REFRATOR"],
+                      "comparacao": "contem", "fala": "Atenção! Senha de dilatação", "voz": True},
+        "lentes": {"nome": "Lentes", "termos": ["LENTES"],
+                   "comparacao": "contem", "fala": "Nova Senha", "voz": True},
+        "mc": {"nome": "Marcação MC", "termos": ["MC"],
+               "comparacao": "exata", "fala": "", "voz": False},
+        "r2": {"nome": "R2", "termos": ["R2"],
+               "comparacao": "contem", "fala": "", "voz": True},
+    },
     # watchdog (auto-recuperação)
     "watchdog_limite_sem_batimento_segundos": 180,
     "watchdog_recarregar_pagina_minutos": 30,
@@ -901,6 +915,74 @@ def dentro_do_horario(cfg=None, agora=None):
     return (minutos >= inicio and dia in horario["dias"]) or (minutos < fim and dia_anterior in horario["dias"])
 
 
+def _falas_normalizadas(valor):
+    """falas_filtros do filtros.json -> lista ordenada de filtros prontos para comparar.
+
+    Filtro conhecido (dilatacao/lentes/mc/r2) sem algum campo usa o padrão dele;
+    filtro novo sem "fala"/"voz" fala a senha da tela, como antes da 2.2.0.
+    Sem a chave (filtros.json antigo) valem os padrões."""
+    padroes = FILTROS_PADRAO["falas_filtros"]
+    if not isinstance(valor, dict):
+        valor = padroes
+    filtros = []
+    for chave, dados in valor.items():
+        if not isinstance(dados, dict):
+            continue
+        base = dict(padroes.get(chave) or {"nome": str(chave), "termos": [str(chave)],
+                                           "comparacao": "contem", "fala": "", "voz": True})
+        base.update({k: v for k, v in dados.items() if v is not None})
+        termos = base.get("termos")
+        if isinstance(termos, str):
+            termos = termos.split(",")
+        termos_texto = [str(t).strip() for t in (termos or []) if str(t).strip()]
+        comparacao = str(base.get("comparacao") or "contem").strip().lower()
+        filtros.append({
+            "chave": str(chave),
+            "nome": str(base.get("nome") or chave).strip() or str(chave),
+            "termos": [normalizar_texto(t) for t in termos_texto if normalizar_texto(t)],
+            "termos_texto": termos_texto,
+            "comparacao": "exata" if comparacao in ("exata", "exato", "igual") else "contem",
+            "fala": str(base.get("fala") or "").strip()[:200],
+            "voz": _para_bool(base.get("voz"), True),
+        })
+    return filtros
+
+
+def migrar_falas_filtros(dados):
+    """Primeira execução da 2.2.0 num PC que já tinha filtros.json: grava as falas
+    padrão SÓ onde os campos novos não existem. Nunca apaga nem troca o que o PC
+    já personalizou (nem recria um filtro que foi tirado de propósito).
+    Devolve True quando mudou alguma coisa."""
+    import copy
+    padroes = FILTROS_PADRAO["falas_filtros"]
+    atual = dados.get("falas_filtros")
+    if not isinstance(atual, dict):
+        dados["falas_filtros"] = copy.deepcopy(padroes)
+        return True
+    mudou = False
+    for chave, filtro in atual.items():
+        if not isinstance(filtro, dict) or chave not in padroes:
+            continue
+        for campo, valor in padroes[chave].items():
+            if campo not in filtro:
+                filtro[campo] = copy.deepcopy(valor)
+                mudou = True
+    return mudou
+
+
+def filtro_da_senha(ticket, cfg=None):
+    """Filtro (de falas_filtros) em que a senha se encaixa, ou None."""
+    cfg = cfg or carregar_filtros()
+    texto = normalizar_texto(ticket)
+    if not texto:
+        return None
+    for filtro in cfg.get("falas_filtros") or []:
+        for termo in filtro["termos"]:
+            if (texto == termo) if filtro["comparacao"] == "exata" else (termo in texto):
+                return filtro
+    return None
+
+
 def _gravar_json(caminho, dados):
     """Gravação atômica (.tmp + os.replace): o JSON nunca fica pela metade."""
     _gravar_json_atomico(caminho, dados)
@@ -944,6 +1026,15 @@ def carregar_filtros(forcar=False):
         dados = _ler_json(ARQ_FILTROS)
         if not isinstance(dados, dict):
             raise ValueError("o conteúdo precisa ser um objeto JSON { ... }")
+        if migrar_falas_filtros(dados):
+            try:
+                _gravar_json(ARQ_FILTROS, dados)
+                mtime = os.path.getmtime(ARQ_FILTROS)
+                log_msg("🗣️ filtros.json: falas por filtro adicionadas (Dilatação = 'Atenção! Senha de "
+                        "dilatação', Lentes = 'Nova Senha', MC = sem voz). Personalizações mantidas.")
+            except Exception as e:
+                log_msg(f"⚠️ Não consegui gravar as falas por filtro no filtros.json ({e}). "
+                        "Usando os padrões só na memória.")
         combinado = dict(FILTROS_PADRAO)
         combinado.update({k: v for k, v in dados.items() if not str(k).startswith("_") and v is not None})
         _FILTROS = {
@@ -971,6 +1062,7 @@ def carregar_filtros(forcar=False):
             "volume_alarme": _para_int(combinado.get("volume_alarme"), 100, 0, 100),
             "saida_audio": str(combinado.get("saida_audio") or "padrao").strip(),
             "anti_repeticao_segundos": _para_int(combinado.get("anti_repeticao_segundos"), 60, 0),
+            "falas_filtros": _falas_normalizadas(combinado.get("falas_filtros")),
             "watchdog_limite_sem_batimento_segundos": _para_int(
                 combinado.get("watchdog_limite_sem_batimento_segundos"), 180, 60),
             "watchdog_recarregar_pagina_minutos": _para_int(
@@ -1602,10 +1694,24 @@ def _texto_para_fala(ticket):
     return " ".join(palavras).strip()
 
 
-def frase_alarme(ticket=None):
-    """A frase falada vem da senha REAL que está na tela (nada fixo)."""
-    texto = _texto_para_fala(ticket if ticket is not None else _TICKET_ALARME)
+def frase_alarme(ticket=None, cfg=None):
+    """A frase falada: a "fala" do filtro da senha (falas_filtros) ou, quando o
+    filtro não tem fala própria, a senha REAL que está na tela."""
+    ticket = ticket if ticket is not None else _TICKET_ALARME
+    try:
+        filtro = filtro_da_senha(ticket, cfg)
+    except Exception:
+        filtro = None
+    if filtro and filtro.get("fala"):
+        return filtro["fala"]
+    texto = _texto_para_fala(ticket)
     return f"Atenção! Senha {texto}." if texto else FRASE_GENERICA
+
+
+def voz_ligada_para(ticket, cfg=None):
+    """(fala?, filtro): False quando o filtro da senha está com "voz": false."""
+    filtro = filtro_da_senha(ticket, cfg)
+    return (filtro["voz"] if filtro else True), filtro
 
 
 def _registrar_falha_audio(tipo, erro):
@@ -1730,8 +1836,9 @@ def _frases_para_pregerar(cfg=None):
     cfg = cfg or carregar_filtros()
     frases = [FRASE_GENERICA]
     for texto in cfg.get("whitelist_texto") or []:
-        frase = frase_alarme(texto)
-        if frase not in frases:
+        falar, _filtro = voz_ligada_para(texto, cfg)
+        frase = frase_alarme(texto, cfg)
+        if falar and frase not in frases:
             frases.append(frase)
     return frases
 
@@ -1861,7 +1968,7 @@ def loop_audio_alarme():
 
     # A fala é a da senha que está na tela (cache -> gTTS -> voz do Windows).
     ticket = _TICKET_ALARME
-    arquivo = obter_audio(frase_alarme(ticket)) or obter_audio(FRASE_GENERICA, usar_rede=False)
+    arquivo = obter_audio(frase_alarme(ticket, cfg)) or obter_audio(FRASE_GENERICA, usar_rede=False)
     if not arquivo:
         _registrar_falha_audio("sem_arquivo", "nenhuma voz disponível")
         _definir_sem_audio("sem voz disponível (só bipe)")
@@ -1931,9 +2038,16 @@ def _disparar_estado_alarme_sem_trava():
     cfg = carregar_filtros()
     quer_tela = cfg.get("alerta_tela", True)
     quer_voz = cfg.get("alerta_voz", True)
+    voz_filtro, filtro = voz_ligada_para(_TICKET_ALARME, cfg)
+    if quer_voz and not voz_filtro:
+        quer_voz = False
+        log_msg(f"🔇 '{_TICKET_ALARME}': voz desligada no filtro '{filtro['nome']}' (aba Falas).")
 
     if not quer_tela and not quer_voz:
-        log_msg("⚠️ Chamada detectada, mas alerta_tela e alerta_voz estão desligados no filtros.json — nada será exibido nem tocado.")
+        if voz_filtro:
+            log_msg("⚠️ Chamada detectada, mas alerta_tela e alerta_voz estão desligados no filtros.json — nada será exibido nem tocado.")
+        else:
+            log_msg("⚠️ Chamada detectada sem voz (filtro) e com alerta_tela desligado — nada será exibido nem tocado.")
         return
 
     # Anti-repetição: a MESMA senha não é anunciada de novo dentro da janela
@@ -4369,7 +4483,7 @@ def abrir_configuracoes(aba="senhas"):
     global _JANELA_CONFIG, _ABAS_CONFIG
 
     def _selecionar():
-        indice = {"senhas": 0, "login": 1, "alertas": 2, "sistema": 3}.get(str(aba).lower(), 0)
+        indice = {"senhas": 0, "login": 1, "alertas": 2, "sistema": 3, "falas": 4}.get(str(aba).lower(), 0)
         try:
             if _ABAS_CONFIG is not None:
                 _ABAS_CONFIG.select(indice)
@@ -4723,6 +4837,68 @@ def abrir_configuracoes(aba="senhas"):
               command=lambda: os.startfile(PASTA_LOGS) if os.path.isdir(PASTA_LOGS) else None,
               bg="#374151", fg="white", relief=tk.FLAT, padx=10, pady=4).pack(side=tk.LEFT, padx=8)
 
+    # ---------------- aba FALAS (fala e voz de cada filtro) ----------------
+    aba_falas = tk.Frame(abas, bg="#1e1e1e")
+    abas.add(aba_falas, text="  Falas  ")
+    _selecionar()
+
+    tk.Label(aba_falas,
+             text="O que a voz fala em cada filtro. A senha que alertou é comparada com as\n"
+                  "senhas/termos de cada linha (de cima para baixo); a primeira que casar decide.\n"
+                  "Fala vazia = fala a senha da tela (\"Atenção! Senha ...\").\n"
+                  "Sem \"Falar em voz alta\" a voz fica muda nesse filtro (a janela vermelha segue a aba Alertas).",
+             bg="#1e1e1e", fg="#9ca3af", font=("Consolas", 9), justify=tk.LEFT
+             ).pack(anchor="w", padx=14, pady=(10, 6))
+
+    form_falas = tk.Frame(aba_falas, bg="#1e1e1e")
+    form_falas.pack(anchor="w", padx=14, fill=tk.X)
+    for coluna, titulo in enumerate(("Filtro", "Senhas / termos (vírgula)", "Fala", "", "")):
+        tk.Label(form_falas, text=titulo, bg="#1e1e1e", fg="#9ca3af",
+                 font=("Consolas", 9, "bold")).grid(row=0, column=coluna, sticky="w", padx=4, pady=(0, 4))
+
+    falas_brutas = filtros.get("falas_filtros")
+    if not isinstance(falas_brutas, dict):
+        falas_brutas = FILTROS_PADRAO["falas_filtros"]
+    linhas_falas = []
+    for linha, filtro_fala in enumerate(_falas_normalizadas(falas_brutas), start=1):
+        tk.Label(form_falas, text=filtro_fala["nome"], bg="#1e1e1e", fg="#e5e7eb",
+                 font=("Consolas", 10)).grid(row=linha, column=0, sticky="w", padx=4, pady=4)
+        campo_termos = tk.Entry(form_falas, width=24, bg="#111111", fg="#eeeeee", insertbackground="#eeeeee")
+        campo_termos.insert(0, ", ".join(filtro_fala["termos_texto"]))
+        campo_termos.grid(row=linha, column=1, padx=4, sticky="w")
+        campo_fala = tk.Entry(form_falas, width=30, bg="#111111", fg="#eeeeee", insertbackground="#eeeeee")
+        campo_fala.insert(0, filtro_fala["fala"])
+        campo_fala.grid(row=linha, column=2, padx=4, sticky="w")
+        var_fala_voz = tk.BooleanVar(value=filtro_fala["voz"])
+        tk.Checkbutton(form_falas, text="Falar em voz alta", variable=var_fala_voz,
+                       bg="#1e1e1e", fg="#e5e7eb", selectcolor="#111111", activebackground="#1e1e1e",
+                       activeforeground="#e5e7eb", font=("Consolas", 9)
+                       ).grid(row=linha, column=3, sticky="w", padx=4)
+
+        def testar_fala(c_fala=campo_fala, c_termos=campo_termos):
+            frase = c_fala.get().strip()
+            if not frase:
+                primeiro = (c_termos.get().split(",") or [""])[0].strip()
+                frase = f"Atenção! Senha {_texto_para_fala(primeiro)}." if primeiro else FRASE_GENERICA
+            threading.Thread(target=gerar_e_tocar_alerta_teste, args=(frase,), daemon=True).start()
+
+        tk.Button(form_falas, text="▶ Testar", command=testar_fala, bg="#374151", fg="white",
+                  relief=tk.FLAT, padx=8).grid(row=linha, column=4, padx=4)
+        linhas_falas.append((filtro_fala["chave"], campo_termos, campo_fala, var_fala_voz))
+
+    def coletar_falas(atuais):
+        """Monta falas_filtros a partir da aba, mantendo campos extras do arquivo."""
+        import copy
+        novo = copy.deepcopy(atuais) if isinstance(atuais, dict) else copy.deepcopy(FILTROS_PADRAO["falas_filtros"])
+        for chave_f, c_termos, c_fala, v_voz in linhas_falas:
+            item_f = novo.get(chave_f) if isinstance(novo.get(chave_f), dict) else dict(
+                FILTROS_PADRAO["falas_filtros"].get(chave_f) or {"nome": chave_f, "comparacao": "contem"})
+            item_f["termos"] = [t.strip().upper() for t in c_termos.get().split(",") if t.strip()]
+            item_f["fala"] = c_fala.get().strip()
+            item_f["voz"] = bool(v_voz.get())
+            novo[chave_f] = item_f
+        return novo
+
     # ---------------- rodapé ----------------
     rodape = tk.Frame(janela, bg="#1e1e1e")
     rodape.pack(fill=tk.X, padx=10, pady=(0, 10))
@@ -4752,6 +4928,7 @@ def abrir_configuracoes(aba="senhas"):
             dados["volume_alarme"] = _para_int(entrada_volume.get(), 100, 0, 100)
             dados["saida_audio"] = combo_saida.get() or "padrao"
             dados["anti_repeticao_segundos"] = _para_int(entrada_antirep.get(), 60, 0)
+            dados["falas_filtros"] = coletar_falas(dados.get("falas_filtros"))
             dados["auto_atualizar"] = bool(var_auto.get())
             for chave, (campo, padrao_campo) in campos_sistema.items():
                 if isinstance(padrao_campo, int):
@@ -4813,7 +4990,7 @@ def abrir_configuracoes(aba="senhas"):
             messagebox.showinfo(
                 "Configurações salvas",
                 "filtros.json e credenciais.json atualizados.\n\n"
-                "As senhas e os alertas valem na hora.\n" + aviso_login,
+                "As senhas, os alertas e as falas valem na hora.\n" + aviso_login,
                 parent=janela,
             )
         except Exception as e:

@@ -1,5 +1,5 @@
 {
-  "_comentario": "Edite este arquivo e salve: o script recarrega sozinho, sem reiniciar. whitelist = senhas que DEVEM alertar (vence a blacklist); blacklist = senhas que devem ser IGNORADAS; termos_gatilho = textos usados para localizar o botao da senha no modal; padrao_sem_match = 'alertar' ou 'ignorar' quando o texto nao esta em nenhuma das listas; alerta_tela = janela piscando; alerta_voz = fala sintetizada.",
+  "_comentario": "Edite este arquivo e salve: o script recarrega sozinho, sem reiniciar. whitelist = senhas que DEVEM alertar (vence a blacklist); blacklist = senhas que devem ser IGNORADAS; termos_gatilho = textos usados para localizar o botao da senha no modal; padrao_sem_match = 'alertar' ou 'ignorar' quando o texto nao esta em nenhuma das listas; alerta_tela = janela piscando; alerta_voz = fala sintetizada. falas_filtros = fala e voz (true/false) de cada filtro; fala vazia = fala a senha da tela.",
   "termos_gatilho": [
     "DILATAÇÃO",
     "DILATACAO",
@@ -51,6 +51,46 @@
   "volume_alarme": 100,
   "saida_audio": "padrao",
   "anti_repeticao_segundos": 60,
+  "falas_filtros": {
+    "dilatacao": {
+      "nome": "Dilatação",
+      "termos": [
+        "DILATAÇÃO",
+        "DILATACAO",
+        "AUTO REFRATOR"
+      ],
+      "comparacao": "contem",
+      "fala": "Atenção! Senha de dilatação",
+      "voz": true
+    },
+    "lentes": {
+      "nome": "Lentes",
+      "termos": [
+        "LENTES"
+      ],
+      "comparacao": "contem",
+      "fala": "Nova Senha",
+      "voz": true
+    },
+    "mc": {
+      "nome": "Marcação MC",
+      "termos": [
+        "MC"
+      ],
+      "comparacao": "exata",
+      "fala": "",
+      "voz": false
+    },
+    "r2": {
+      "nome": "R2",
+      "termos": [
+        "R2"
+      ],
+      "comparacao": "contem",
+      "fala": "",
+      "voz": true
+    }
+  },
   "watchdog_limite_sem_batimento_segundos": 180,
   "watchdog_recarregar_pagina_minutos": 30,
   "watchdog_reiniciar_chrome_horas": 0,

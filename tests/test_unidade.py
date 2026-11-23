@@ -50,7 +50,8 @@ def test_textos_do_alarme_vem_da_senha(monitor):
     assert titulo == "NOVA SENHA 'LENTES DE CONTATO' NA FILA"
     assert "7 minutos" in texto and "Enter" in texto
     assert "1 minuto." in monitor.textos_janela_alarme("MC", 1)[1]
-    assert monitor.frase_alarme("DILATAÇÃO - CCC") == "Atenção! Senha Dilatação - CCC."
+    assert monitor.frase_alarme("DILATAÇÃO - CCC") == "Atenção! Senha de dilatação"   # fala do filtro (2.2.0)
+    assert monitor.frase_alarme("RECEPÇÃO SUS") == "Atenção! Senha Recepção SUS."
     assert monitor.frase_alarme("") == monitor.FRASE_GENERICA
 
 
