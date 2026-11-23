@@ -2,6 +2,17 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.2.2 — escada de recuperação: Chrome sumiu, o monitor se recupera sozinho
+
+- **Corrigido o "batendo cabeça" sem Chrome.** Quando o Chrome/chromedriver morria, o monitor reabria o Chrome (N2) com espera crescente (5 s, 15 s, 30 s… até 10 min, e 15 min depois de 6 por hora), mas **nunca subia para o reinício do programa**: o N3 só olhava o tempo *sem batimento*, e toda tentativa e toda espera registravam batimento (`registrar_batimento(ok=False)` / `_dormir(..., progresso=True)`). O supervisor também não agia, porque o heartbeat é gravado pela thread do watchdog, que continuava viva. Além disso, `_visivel`, `_senhas_na_tela`, `_confirmar_troca_sessao` e os laços do bypass do login engoliam o erro de conexão e ficavam até 20 s / 90 s / 5 min chamando a porta fechada do chromedriver (as linhas `Retrying ... Failed to establish a new connection` no console).
+- **Escada nova:** (N2) o watchdog confere a cada 15 s se o chromedriver que o monitor abriu (pelo PID) ainda existe e ainda tem Chrome; se não, fecha os restos **desse perfil e desse chromedriver** (nunca os outros Chromes do PC), recria o driver e entra de novo. (N3) **3 reaberturas seguidas sem nenhum ciclo OK em 10 min**, ou **3 min monitorando sem ciclo OK**, ou **10 min em qualquer etapa (abrir/login) sem ciclo OK** = reinicia o programa inteiro pelo mesmo caminho do menu *Reiniciar monitor*. (Supervisor) heartbeat parado há mais de **5 min** (era 10) = mata e relança; heartbeat andando mas monitor ativo **30 min sem ciclo OK** = relança (reserva).
+- **Proteção contra laço:** no máximo **5 reinícios por hora** (era 4); passou disso segura **10 min** e tenta de novo, com aviso no log, no status (vermelho) e na bandeja. O supervisor tem o mesmo limite para os relançamentos forçados.
+- **Nunca no meio de um alarme:** com a janela vermelha aberta ou a voz falando, o reinício por falha é adiado até terminar (`[N3] Reinício do programa adiado`). Sem internet, etapa fora do horário ou aguardando login, não reinicia.
+- Erros reconhecidos como "Chrome morto" ampliados: `MaxRetryError`/`NewConnectionError`/`ProtocolError` do urllib3 (inclusive dentro de outra exceção), `ConnectionRefusedError`/`ConnectionResetError`, `read timed out`, `WinError 10061/10054`, `not connected to DevTools`.
+- Opções novas no `filtros.json`: `recuperacao_falhas_para_reiniciar` (3), `recuperacao_janela_falhas_min` (10), `recuperacao_min_sem_ok` (3), `recuperacao_min_sem_ok_total` (10), `recuperacao_max_reinicios_por_hora` (5), `recuperacao_espera_limite_min` (10). O `status.json` ganhou `reaberturas_sem_ok` e `reinicio_bloqueado_ate`; o `heartbeat.json` ganhou `ativo`, `ok_ref_ts` e `alarme`.
+- Testes novos em `tests/test_recuperacao.py` (Chrome morto → recria, falha repetida → reinicia, limite de reinícios, nada durante alarme, supervisor relança).
+- Publicada só como `.py` (sem `.exe`): os PCs que usam o `.exe` continuam na 2.2.0.
+
 ### v2.2.1 — Chrome maximizado quando visível
 
 - **Janela do Chrome visível = maximizada** (ao mostrar pela bandeja, ao abrir com o painel visível e depois de reiniciar o Chrome ou o programa). Antes ela aparecia com 1024x768 fixo.

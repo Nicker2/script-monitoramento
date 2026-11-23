@@ -55,7 +55,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.2.1"
+VERSAO = "2.2.2"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -581,6 +581,15 @@ from selenium.common.exceptions import (
     NoSuchElementException, ElementNotInteractableException, TimeoutException,
     InvalidSessionIdException, NoSuchWindowException,
 )
+try:   # erros de conexão com o chromedriver (vem junto com o Selenium)
+    from urllib3.exceptions import HTTPError as _Urllib3Erro
+    _ERROS_CONEXAO_DRIVER = (ConnectionError, _Urllib3Erro)
+except Exception:
+    _ERROS_CONEXAO_DRIVER = (ConnectionError,)
+# Com o chromedriver morto, cada chamada do Selenium enchia o console com
+# "Retrying (Retry(total=2...)) ... Failed to establish a new connection".
+# O monitor detecta e loga a recuperação ele mesmo.
+logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 
 # ==============================================================================
 # VARIÁVEIS GLOBAIS E ESTADOS
@@ -669,6 +678,13 @@ FILTROS_PADRAO = {
     "watchdog_recarregar_pagina_minutos": 30,
     "watchdog_reiniciar_chrome_horas": 0,
     "watchdog_max_reinicios_por_hora": 6,
+    # escada de recuperação (2.2.2): Chrome sumiu -> recria o driver; falhou de novo -> reinicia o programa
+    "recuperacao_falhas_para_reiniciar": 3,    # reaberturas do Chrome seguidas, sem ciclo OK...
+    "recuperacao_janela_falhas_min": 10,       # ...dentro desta janela = reinicia o programa
+    "recuperacao_min_sem_ok": 3,               # monitorando sem nenhum ciclo OK há X min = reinicia
+    "recuperacao_min_sem_ok_total": 10,        # em qualquer etapa (abrir/login) sem ciclo OK há X min = reinicia
+    "recuperacao_max_reinicios_por_hora": 5,   # proteção contra laço de reinício...
+    "recuperacao_espera_limite_min": 10,       # ...passou do limite: espera isto e tenta de novo
     # reinício programado do programa inteiro (Chrome + processo), em minutos (0 = desligado)
     "reiniciar_a_cada_min": 60,
     # atualização automática pelo GitHub (versao.json)
@@ -760,7 +776,7 @@ _TICKET_ALARME = ""
 
 # Estado do watchdog / atualização (ver seções 🩺 e ⬆️)
 _ENCERRANDO = False
-_ETAPA = "parado"              # parado | abrindo_chrome | login | monitorando | offline | aguardando_login
+_ETAPA = "parado"              # parado | abrindo_chrome | login | monitorando | reabrindo | offline | aguardando_login | fora_horario
 _ULTIMO_PROGRESSO = time.time()  # qualquer avanço do monitor (etapa, tentativa, ciclo, espera proposital)
 _ULTIMO_OK = 0.0                 # último ciclo em que a página respondeu certo
 _PEDIDO_REINICIO_CHROME = ""     # motivo, quando o watchdog manda reabrir o Chrome
@@ -785,6 +801,11 @@ _REINICIO_SEM_ESPERA = False     # reabrir o Chrome já (troca de login), sem ba
 _TK_TICK = time.time()           # última volta do laço do Tk (vai no status.json)
 _ULTIMO_HEARTBEAT = 0.0
 _PID_CHROMEDRIVER = 0
+# escada de recuperação (2.2.2)
+_MARCO_ETAPA = time.time()       # quando a etapa atual começou
+_MARCO_ATIVO = time.time()       # quando saiu da última etapa "pausada" (offline, fora do horário...)
+_FALHAS_CHROME = []              # reaberturas do Chrome desde o último ciclo OK
+_AVISO_RECUPERACAO = ""          # último aviso de recuperação logado (loga só quando muda)
 
 
 def normalizar_texto(texto):
@@ -1071,6 +1092,17 @@ def carregar_filtros(forcar=False):
                 combinado.get("watchdog_reiniciar_chrome_horas"), 0, 0),
             "watchdog_max_reinicios_por_hora": _para_int(
                 combinado.get("watchdog_max_reinicios_por_hora"), 6, 1),
+            "recuperacao_falhas_para_reiniciar": _para_int(
+                combinado.get("recuperacao_falhas_para_reiniciar"), 3, 1, 50),
+            "recuperacao_janela_falhas_min": _para_int(
+                combinado.get("recuperacao_janela_falhas_min"), 10, 1, 240),
+            "recuperacao_min_sem_ok": _para_int(combinado.get("recuperacao_min_sem_ok"), 3, 1, 240),
+            "recuperacao_min_sem_ok_total": _para_int(
+                combinado.get("recuperacao_min_sem_ok_total"), 10, 3, 480),
+            "recuperacao_max_reinicios_por_hora": _para_int(
+                combinado.get("recuperacao_max_reinicios_por_hora"), 5, 1, 60),
+            "recuperacao_espera_limite_min": _para_int(
+                combinado.get("recuperacao_espera_limite_min"), 10, 1, 240),
             "reiniciar_a_cada_min": _minutos_reinicio_programado(combinado.get("reiniciar_a_cada_min")),
             "auto_atualizar": _para_bool(combinado.get("auto_atualizar"), True),
             "atualizacao_intervalo_minutos": _para_int(
@@ -2736,6 +2768,7 @@ def loop_supervisionado():
             if motivo == MOTIVO_FORA_HORARIO:
                 continue
             log_msg(f"♻️ [N2] Reabrindo o Chrome. Motivo: {motivo}")
+            _registrar_falha_chrome(motivo)
             if _REINICIO_SEM_ESPERA:
                 _REINICIO_SEM_ESPERA = False
                 _dormir(2, progresso=True)
@@ -2781,7 +2814,9 @@ def _visivel(driver_alvo, seletores, timeout=12.0):
                 for elemento in driver_alvo.find_elements(By.CSS_SELECTOR, seletor):
                     if elemento.is_displayed() and elemento.is_enabled():
                         return elemento
-            except Exception:
+            except Exception as erro:
+                if _erro_chrome_morto(erro):
+                    raise   # Chrome/chromedriver morto: não fica 20 s batendo na porta fechada
                 continue
         time.sleep(0.25)
     return None
@@ -2838,7 +2873,9 @@ def _confirmar_troca_sessao(driver_alvo, senha=None, timeout=90.0):
             return True
         try:
             tem_disconnect = bool(driver_alvo.find_elements(By.CSS_SELECTOR, "input[name='disconnect']"))
-        except Exception:
+        except Exception as erro:
+            if _erro_chrome_morto(erro):
+                raise
             tem_disconnect = False
         if tem_disconnect:
             if not avisou:
@@ -3026,7 +3063,9 @@ def _executar_bypass_sso(usuario, senha):
             return True, "bypass SSO concluido"
         try:
             estado = driver.execute_script("return (window.__monitorBypass || {}).estado || '';")
-        except Exception:
+        except Exception as erro:
+            if _erro_chrome_morto(erro):
+                return False, f"Chrome parou no meio do login: {type(erro).__name__}: {erro}"
             estado = ""   # pagina navegando
         if estado == "credenciais":
             return False, "senha incorreta no SSO"
@@ -3079,7 +3118,9 @@ def login_legado(usuario, senha, url_login):
             return True, "bypass concluído"
         try:
             estado = driver.execute_script("return (window.__monitorBypass || {}).estado || '';")
-        except Exception:
+        except Exception as erro:
+            if _erro_chrome_morto(erro):
+                return False, f"Chrome parou no meio do login: {type(erro).__name__}: {erro}"
             estado = ""   # página navegando
         if estado == "desistiu":
             return False, f"o bypass desistiu depois de {BYPASS_MAX_TENTATIVAS} tentativas"
@@ -3134,6 +3175,11 @@ def fazer_login():
                 solicitar_credenciais("recusadas")
                 return False
             if _erro_chrome_morto(motivo):
+                log_msg("🩺 O Chrome parou durante o login — recriando o navegador.")
+                return False
+            vivo, motivo_chrome = chrome_vivo()
+            if not vivo:
+                log_msg(f"🩺 {motivo_chrome} — recriando o navegador em vez de insistir no login.")
                 return False
         _dormir(espera, progresso=True)
         espera = min(espera * 1.8, 30.0)
@@ -3210,7 +3256,9 @@ def _senhas_na_tela(cfg, timeout=8.0):
     while time.time() < fim:
         try:
             elementos = driver.find_elements(By.XPATH, xpath)
-        except Exception:
+        except Exception as erro:
+            if _erro_chrome_morto(erro):
+                raise
             elementos = []
 
         achadas, vistos = [], set()
@@ -3466,6 +3514,9 @@ def verificar_botao_chamar_senha():
         except Exception as e:
             if _erro_chrome_morto(e):
                 return f"Chrome parou de responder ({type(e).__name__})"
+            vivo, motivo_chrome = chrome_vivo(ping=False)
+            if not vivo:
+                return f"Chrome ausente ({motivo_chrome})"
             falhas += 1
             estado, detalhe = diagnosticar_pagina()
             motivo = tratar_falha(estado, detalhe, falhas, url_lista)
@@ -3673,20 +3724,199 @@ ERROS_CHROME_MORTO = (
     "target window already closed", "session deleted", "connection refused",
     "max retries exceeded", "failed to establish a new connection", "web view not found",
     "tab crashed", "no such execution context", "unable to receive message from renderer",
+    # 2.2.2: chromedriver morto/pendurado (urllib3) e textos do Windows
+    "read timed out", "remote end closed connection", "connection aborted",
+    "connection reset", "winerror 10061", "winerror 10054", "no such session",
+    "not connected to devtools",
 )
 
 
 def _erro_chrome_morto(erro):
-    if isinstance(erro, (InvalidSessionIdException, NoSuchWindowException)):
-        return True
-    texto = str(erro).lower()
-    return any(trecho in texto for trecho in ERROS_CHROME_MORTO)
+    """True quando o erro (exceção ou texto) indica Chrome/chromedriver fora do ar."""
+    vistos = 0
+    while erro is not None and vistos < 5:
+        if isinstance(erro, (InvalidSessionIdException, NoSuchWindowException) + _ERROS_CONEXAO_DRIVER):
+            return True
+        texto = str(erro).lower()
+        if any(trecho in texto for trecho in ERROS_CHROME_MORTO):
+            return True
+        erro = getattr(erro, "__cause__", None) or getattr(erro, "__context__", None)
+        vistos += 1
+    return False
+
+
+def _chrome_do_perfil_aberto():
+    """Há algum chrome.exe usando o perfil do monitor? (reserva quando o Chrome não é filho do chromedriver)"""
+    perfil = _pasta_perfil_chrome()
+    if not perfil:
+        return False
+    alvo = os.path.normcase(os.path.abspath(perfil))
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            if (proc.info.get("name") or "").lower() != "chrome.exe":
+                continue
+            if alvo in os.path.normcase(" ".join(proc.info.get("cmdline") or [])):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def chrome_vivo(ping=True, timeout=8.0):
+    """(True, "") quando o Chrome do monitor existe e responde; (False, motivo) quando não.
+
+    1) o chromedriver que ESTE monitor abriu (pelo PID) ainda existe?
+    2) ele ainda tem um Chrome aberto (filho, ou um chrome.exe com o nosso perfil)?
+    3) ping=True: driver.title responde em `timeout` s? (só na thread do monitor)
+    """
+    alvo = driver
+    if alvo is None:
+        return False, "o navegador não está aberto"
+    pid = _PID_CHROMEDRIVER
+    if pid:
+        try:
+            processo = psutil.Process(pid)
+            if not processo.is_running() or "chromedriver" not in (processo.name() or "").lower():
+                return False, f"o chromedriver (PID {pid}) não existe mais"
+            if processo.status() == psutil.STATUS_ZOMBIE:
+                return False, f"o chromedriver (PID {pid}) morreu"
+            filhos = [f for f in processo.children(recursive=True)
+                      if (f.name() or "").lower() == "chrome.exe"]
+            if not filhos and not _chrome_do_perfil_aberto():
+                return False, "o Chrome fechou (o chromedriver ficou sem navegador)"
+        except psutil.NoSuchProcess:
+            return False, f"o chromedriver (PID {pid}) não existe mais"
+        except Exception:
+            pass   # sem permissão para olhar: decide pelo ping
+    if not ping:
+        return True, ""
+    resultado = {}
+
+    def _ping():
+        try:
+            resultado["titulo"] = alvo.title
+        except Exception as erro:
+            resultado["erro"] = erro
+    tarefa = threading.Thread(target=_ping, name="ping-chrome", daemon=True)
+    tarefa.start()
+    tarefa.join(timeout)
+    if tarefa.is_alive():
+        return False, f"o Chrome não respondeu em {int(timeout)} s"
+    erro = resultado.get("erro")
+    if erro is not None and _erro_chrome_morto(erro):
+        return False, f"o Chrome não responde ({type(erro).__name__})"
+    return True, ""
+
+
+ETAPAS_PAUSADAS = ("parado", "offline", "aguardando_login", "fora_horario")
+
+
+def _registrar_falha_chrome(motivo):
+    """Uma reabertura do Chrome (N2). Seguidas, sem ciclo OK, sobem para o N3."""
+    agora = time.time()
+    cfg = carregar_filtros()
+    janela = cfg["recuperacao_janela_falhas_min"] * 60
+    _FALHAS_CHROME[:] = [t for t in _FALHAS_CHROME if agora - t <= janela] + [agora]
+    log_msg(f"🪜 Reabertura {len(_FALHAS_CHROME)}/{cfg['recuperacao_falhas_para_reiniciar']} sem ciclo OK "
+            f"(em {cfg['recuperacao_janela_falhas_min']} min). Ao chegar no limite o programa inteiro reinicia.")
+    _definir_etapa("reabrindo")
+
+
+def decidir_reinicio_por_falha(cfg, agora, etapa, ultimo_ok, marco_ativo, marco_etapa,
+                               falhas_chrome, alarme=False, falando=False):
+    """Degrau N3 da escada. ("nao", "") | ("adiar", motivo) | ("reiniciar", motivo).
+
+    Reinicia o programa inteiro quando:
+      * houve `recuperacao_falhas_para_reiniciar` reaberturas do Chrome sem nenhum ciclo OK
+        dentro de `recuperacao_janela_falhas_min`; ou
+      * está monitorando há mais de `recuperacao_min_sem_ok` min sem nenhum ciclo OK; ou
+      * em qualquer etapa ativa (abrindo o Chrome, login...) há mais de
+        `recuperacao_min_sem_ok_total` min sem nenhum ciclo OK.
+    Etapas pausadas (sem internet, fora do horário, aguardando login) nunca reiniciam.
+    Nunca reinicia com alarme tocando ou fala em andamento: adia até terminar.
+    """
+    if etapa in ETAPAS_PAUSADAS:
+        return "nao", ""
+    motivo = ""
+    janela = cfg["recuperacao_janela_falhas_min"] * 60
+    recentes = [t for t in falhas_chrome if agora - t <= janela]
+    if len(recentes) >= cfg["recuperacao_falhas_para_reiniciar"]:
+        motivo = (f"{len(recentes)} reaberturas do Chrome seguidas sem nenhum ciclo OK "
+                  f"(em {cfg['recuperacao_janela_falhas_min']} min)")
+    if not motivo and etapa == "monitorando":
+        referencia = max(ultimo_ok, marco_etapa)
+        if agora - referencia > cfg["recuperacao_min_sem_ok"] * 60:
+            motivo = f"monitorando sem nenhum ciclo OK há {int((agora - referencia) / 60)} min"
+    if not motivo:
+        referencia = max(ultimo_ok, marco_ativo)
+        if agora - referencia > cfg["recuperacao_min_sem_ok_total"] * 60:
+            motivo = f"sem nenhum ciclo OK há {int((agora - referencia) / 60)} min (etapa '{etapa}')"
+    if not motivo:
+        return "nao", ""
+    if alarme:
+        return "adiar", f"{motivo} — esperando o alarme terminar"
+    if falando:
+        return "adiar", f"{motivo} — esperando a fala terminar"
+    return "reiniciar", motivo
+
+
+def _avisar_recuperacao(texto, nivel=None, status="", bandeja=""):
+    """Loga (e mostra) só quando o aviso muda — o watchdog chama a cada 15 s."""
+    global _AVISO_RECUPERACAO
+    if _AVISO_RECUPERACAO == texto:
+        return
+    _AVISO_RECUPERACAO = texto
+    log_msg(texto)
+    if nivel:
+        _atualizar_status(nivel, status)
+    if bandeja:
+        _avisar_bandeja(bandeja)
+
+
+def _checar_reinicio_por_falha(agora):
+    """Chamado pelo watchdog: sobe para o N3 (reiniciar o programa) quando a escada manda."""
+    global _AVISO_RECUPERACAO
+    if _ENCERRANDO:
+        return False
+    cfg = carregar_filtros()
+    acao, motivo = decidir_reinicio_por_falha(
+        cfg, agora, _ETAPA, _ULTIMO_OK, _MARCO_ATIVO, _MARCO_ETAPA, list(_FALHAS_CHROME),
+        alarme=bool(alarme_ativo), falando=_TRAVA_AUDIO.locked())
+    if acao == "nao":
+        _AVISO_RECUPERACAO = ""
+        return False
+    if acao == "adiar":
+        _avisar_recuperacao(f"⏳ [N3] Reinício do programa adiado: {motivo}.")
+        return False
+    if not internet_ok():
+        _avisar_recuperacao("📴 [N3] Falhando, mas sem internet — não reinicio (espero a conexão voltar).",
+                            "offline", "Sem internet — aguardando")
+        return False
+    bloqueado_ate = _reinicio_bloqueado_ate()
+    if bloqueado_ate > agora:
+        hora = datetime.datetime.fromtimestamp(bloqueado_ate).strftime("%H:%M")
+        maximo = cfg["recuperacao_max_reinicios_por_hora"]
+        _avisar_recuperacao(
+            f"🚧 [N3] {motivo}, mas o programa já reiniciou {maximo} vezes na última hora. "
+            f"Próxima tentativa de reinício às {hora} (o Chrome continua sendo reaberto até lá).",
+            "falha", f"Falhas repetidas — novo reinício às {hora}",
+            f"O monitor de senhas está falhando e já reiniciou {maximo} vezes nesta hora. "
+            f"Nova tentativa às {hora}.")
+        return False
+    _AVISO_RECUPERACAO = ""
+    log_msg(f"🪜 [N3] Escada de recuperação: {motivo}. Reiniciando o programa inteiro.")
+    return reiniciar_processo(motivo)
 
 
 def _definir_etapa(etapa):
-    global _ETAPA, _ULTIMO_PROGRESSO
+    global _ETAPA, _ULTIMO_PROGRESSO, _MARCO_ETAPA, _MARCO_ATIVO
+    agora = time.time()
+    if etapa != _ETAPA:
+        _MARCO_ETAPA = agora
+        if _ETAPA in ETAPAS_PAUSADAS and etapa not in ETAPAS_PAUSADAS:
+            _MARCO_ATIVO = agora   # voltou da pausa: o relógio do "sem ciclo OK" recomeça
     _ETAPA = etapa
-    _ULTIMO_PROGRESSO = time.time()
+    _ULTIMO_PROGRESSO = agora
 
 
 def registrar_batimento(ok=True):
@@ -3696,6 +3926,9 @@ def registrar_batimento(ok=True):
     _ULTIMO_PROGRESSO = agora
     if ok:
         _ULTIMO_OK = agora
+        if _FALHAS_CHROME:
+            log_msg(f"🪜 Ciclo OK depois de {len(_FALHAS_CHROME)} reabertura(s) do Chrome — escada zerada.")
+            _FALHAS_CHROME.clear()
         if not _PRIMEIRO_OK:
             _PRIMEIRO_OK = True
             confirmar_atualizacao("primeiro ciclo de monitoramento OK")
@@ -3771,28 +4004,58 @@ def _ler_estado_watchdog():
         return {}
 
 
-def _pode_reiniciar_processo(maximo_por_hora=4):
-    """Limite persistente (sobrevive ao reinício) para não entrar em loop."""
+def _reinicio_bloqueado_ate():
+    """Até quando os reinícios por falha estão segurados (0 = liberado)."""
+    try:
+        return float(_ler_estado_watchdog().get("reinicio_bloqueado_ate") or 0)
+    except Exception:
+        return 0.0
+
+
+def _pode_reiniciar_processo(maximo_por_hora=None, espera_segundos=None, agora=None):
+    """Limite persistente (sobrevive ao reinício) para não entrar em laço de reinício.
+
+    Até `maximo_por_hora` reinícios por hora. Passou disso: segura por
+    `espera_segundos` (padrão 10 min) e então libera UMA nova tentativa;
+    se ainda estiver no limite, segura mais 10 min, e assim por diante."""
+    cfg = carregar_filtros()
+    maximo = maximo_por_hora or cfg.get("recuperacao_max_reinicios_por_hora", 5)
+    espera = espera_segundos if espera_segundos is not None else cfg.get("recuperacao_espera_limite_min", 10) * 60
+    agora = agora or time.time()
     dados = _ler_estado_watchdog()
-    agora = time.time()
-    lista = [t for t in (dados.get("reinicios_processo") or []) if agora - float(t) < 3600]
-    if len(lista) >= maximo_por_hora:
+    bloqueado_ate = float(dados.get("reinicio_bloqueado_ate") or 0)
+    if agora < bloqueado_ate:
+        return False
+    lista = [float(t) for t in (dados.get("reinicios_processo") or []) if agora - float(t) < 3600]
+    if len(lista) >= maximo and not bloqueado_ate:
+        dados["reinicios_processo"] = lista
+        dados["reinicio_bloqueado_ate"] = agora + espera
+        _gravar_estado_watchdog(dados)
         return False
     lista.append(agora)
     dados["reinicios_processo"] = lista
+    dados["reinicio_bloqueado_ate"] = 0
+    _gravar_estado_watchdog(dados)
+    return True
+
+
+def _gravar_estado_watchdog(dados):
     try:
         _gravar_json_atomico(ARQ_ESTADO_WATCHDOG, dados, indent=None)
     except Exception:
         pass
-    return True
 
 
 def reiniciar_processo(motivo, ignorar_limite=False):
     """Nível 3: reinicia o programa inteiro (fecha o Chrome, sobe outro processo)."""
     global _ENCERRANDO
     if not ignorar_limite and not _pode_reiniciar_processo():
-        log_msg(f"🚧 Reinício do programa pedido ({motivo}), mas já foram 4 na última hora. Segurando.")
-        _atualizar_status("falha", "Falhas repetidas — aguardando")
+        cfg = carregar_filtros()
+        hora = datetime.datetime.fromtimestamp(_reinicio_bloqueado_ate() or time.time()).strftime("%H:%M")
+        log_msg(f"🚧 Reinício do programa pedido ({motivo}), mas já foram "
+                f"{cfg['recuperacao_max_reinicios_por_hora']} na última hora. Segurando até {hora}.")
+        _atualizar_status("falha", f"Falhas repetidas — novo reinício às {hora}")
+        _avisar_bandeja(f"O monitor de senhas está com falhas repetidas. Nova tentativa de reinício às {hora}.")
         return False
     log_msg(f"🔁 [N3] Reiniciando o programa inteiro. Motivo: {motivo}")
     _ENCERRANDO = True
@@ -3907,6 +4170,8 @@ def montar_status():
         "relogins_ultima_hora": len([t for t in _RELOGINS if agora - t < 3600]),
         "relogin_bloqueado": _RELOGIN_BLOQUEADO_ATE > agora,
         "reinicios_chrome_ultima_hora": len([t for t in _REINICIOS_CHROME if agora - t < 3600]),
+        "reaberturas_sem_ok": len(_FALHAS_CHROME),
+        "reinicio_bloqueado_ate": _reinicio_bloqueado_ate(),
         "ciclo_leve": {"ligado": not _CICLO_LEVE["desligado"], "ciclos_ok": _CICLO_LEVE["ok"],
                        "ultimo_ms": _CICLO_LEVE["ms"]},
         "chrome_ram_mb": _RAM["mb"],
@@ -3917,13 +4182,18 @@ def montar_status():
 
 
 def gravar_heartbeat():
-    """logs/heartbeat.json (o supervisor mata e relança se parar > 10 min) + logs/status.json."""
+    """logs/heartbeat.json (o supervisor mata e relança se parar > 5 min) + logs/status.json."""
     global _ULTIMO_HEARTBEAT
     agora = time.time()
     _ULTIMO_HEARTBEAT = agora
     try:
-        _gravar_json_atomico(ARQ_HEARTBEAT, {"pid": os.getpid(), "ts": agora, "etapa": _ETAPA,
-                                             "versao": VERSAO}, indent=None)
+        _gravar_json_atomico(ARQ_HEARTBEAT, {
+            "pid": os.getpid(), "ts": agora, "etapa": _ETAPA, "versao": VERSAO,
+            # o supervisor usa como reserva: ativo e sem ciclo OK há muito tempo = relança
+            "ativo": _ETAPA not in ETAPAS_PAUSADAS,
+            "ok_ref_ts": max(_ULTIMO_OK, _MARCO_ATIVO),
+            "alarme": bool(alarme_ativo),
+        }, indent=None)
         _gravar_json_atomico(ARQ_STATUS, montar_status())
     except Exception:
         pass
@@ -3953,7 +4223,7 @@ def _checar_pedidos_externos():
 
 def thread_watchdog():
     """Olha o batimento a cada 15 s e age quando o monitor para de andar."""
-    global _ULTIMO_PROGRESSO, _PEDIDO_RECARGA
+    global _ULTIMO_PROGRESSO, _PEDIDO_RECARGA, _MARCO_ATIVO
     ultimo_giro = time.time()
     gravar_heartbeat()
     while not _ENCERRANDO:
@@ -3970,10 +4240,12 @@ def thread_watchdog():
                 log_msg(f"💤 O PC ficou parado/suspenso por ~{int((agora - ultimo_giro) / 60)} min. "
                         "Conferindo a página...")
                 _ULTIMO_PROGRESSO = agora
+                _MARCO_ATIVO = agora   # não conta o tempo suspenso como "sem ciclo OK"
                 if _ETAPA == "monitorando":
                     _PEDIDO_RECARGA = True
             ultimo_giro = agora
             _passo_watchdog(agora)
+            _checar_reinicio_por_falha(agora)
             _checar_confirmacao_por_tempo(agora)
             _checar_reinicio_programado(agora)
         except Exception as e:
@@ -3996,6 +4268,20 @@ def _passo_watchdog(agora):
 
     if not _SELENIUM_RODANDO or _ETAPA in ("offline", "parado", "aguardando_login", "fora_horario"):
         return
+
+    # N2 rápido: o Chrome/chromedriver do monitor sumiu (fechado, travou e morreu...)?
+    if _ETAPA in ("monitorando", "login") and not _PEDIDO_REINICIO_CHROME and driver is not None:
+        vivo, motivo_chrome = chrome_vivo(ping=False)
+        if not vivo:
+            _PEDIDO_REINICIO_CHROME = f"Chrome ausente: {motivo_chrome}"
+            _HORA_PEDIDO_CHROME = agora
+            log_msg(f"🩺 [N2] Watchdog: {motivo_chrome}. Recriando o navegador e entrando de novo.")
+            _atualizar_status("recuperando", "O Chrome fechou — reabrindo o navegador")
+            try:
+                _matar_chromedriver_por_pid()   # chamadas do Selenium penduradas estouram na hora
+            except Exception:
+                pass
+            return
 
     limite = cfg["watchdog_limite_sem_batimento_segundos"]
     if _ETAPA != "monitorando":

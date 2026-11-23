@@ -29,8 +29,20 @@ Antes, o laço principal engolia **qualquer** erro e tentava de novo para sempre
 | Nível | Quando | O que faz |
 | :--- | :--- | :--- |
 | N1 | Uma falha no ciclo | Diagnostica a página: **login** → faz o login de novo; **branca / erro / outra página** → recarrega a Lista de Espera (até 4 vezes seguidas); **sem o botão mas viva** → recarrega no máximo a cada 5 min. |
-| N2 | 5 falhas seguidas, Chrome morto, ou **180 s sem batimento** | Fecha o Chrome do monitor (destrava qualquer chamada pendurada) e abre de novo, com espera crescente: 5 s, 15 s, 30 s, 1, 2, 4 min… No máximo 6 reinícios por hora; passou disso, espera 15 min e avisa na bandeja. |
-| N3 | Nem fechando o Chrome o monitor voltou em 5 min | Reinicia o programa inteiro. No máximo 4 vezes por hora (contador gravado em disco, vale entre reinícios). |
+| N2 | 5 falhas seguidas, Chrome morto, **Chrome/chromedriver sumiu** (conferido a cada 15 s pelo PID), ou **180 s sem batimento** | Fecha o Chrome **do perfil do monitor** e o chromedriver que ele abriu (pelo PID; nunca os outros Chromes do PC), recria o driver e entra de novo, com espera crescente: 5 s, 15 s, 30 s… |
+| N3 | **3 reaberturas do N2 seguidas sem ciclo OK em 10 min**, **3 min monitorando sem ciclo OK**, **10 min em qualquer etapa sem ciclo OK**, ou nem fechando o Chrome o monitor voltou em 5 min | Reinicia o programa inteiro (mesmo caminho do menu *Reiniciar monitor*). No máximo **5 vezes por hora** (contador gravado em disco, vale entre reinícios); passou disso segura **10 min** e tenta de novo, com aviso no status e na bandeja. Com alarme tocando ou voz falando, **adia até terminar**. Sem internet, fora do horário ou aguardando login, não reinicia. |
+| Supervisor | Heartbeat parado há mais de **5 min**, ou monitor ativo **30 min sem ciclo OK** | Mata o processo pelo PID (com os filhos) e relança. Também no máximo 5 por hora, depois 10 min de espera. |
+
+**Escada de recuperação (2.2.2).** Antes, com o Chrome morto o monitor ficava "batendo cabeça": reabria o Chrome com espera cada vez maior, mas o N3 só olhava o tempo *sem batimento*, e toda tentativa/espera contava como batimento — o programa nunca reiniciava. E o heartbeat que o supervisor confere é gravado pela thread do watchdog, que continuava viva. Agora o N3 olha o tempo **sem ciclo OK** (página respondeu certo) e o número de reaberturas seguidas, e os auxiliares do login e da leitura do modal param na hora quando o erro é de Chrome morto (`MaxRetryError`/`NewConnectionError` do urllib3, `ConnectionRefusedError`, `invalid session id`, `no such window`, `chrome not reachable`, `disconnected`, `read timed out`…). Log de cada passo: `🩺 [N2] Watchdog: o chromedriver (PID …) não existe mais`, `🪜 Reabertura 2/3 sem ciclo OK`, `🪜 [N3] Escada de recuperação: …`, `⏳ [N3] Reinício do programa adiado: … esperando o alarme terminar`, `🚧 [N3] … Próxima tentativa de reinício às HH:MM`.
+
+| Opção (`filtros.json`) | Padrão | O que faz |
+| :--- | :--- | :--- |
+| `recuperacao_falhas_para_reiniciar` | `3` | Reaberturas do Chrome seguidas, sem ciclo OK, para reiniciar o programa. |
+| `recuperacao_janela_falhas_min` | `10` | Janela em que essas reaberturas contam. |
+| `recuperacao_min_sem_ok` | `3` | Monitorando sem nenhum ciclo OK há X min = reinicia. |
+| `recuperacao_min_sem_ok_total` | `10` | Em qualquer etapa (abrir o Chrome, login…) sem ciclo OK há X min = reinicia. |
+| `recuperacao_max_reinicios_por_hora` | `5` | Teto de reinícios do programa por hora (os programados não contam). |
+| `recuperacao_espera_limite_min` | `10` | Passou do teto: espera isto e tenta de novo. |
 
 Também:
 
@@ -38,7 +50,7 @@ Também:
 - **PC suspenso/hibernado:** ao voltar, o watchdog percebe o "pulo" do relógio, dá uma folga e recarrega a página.
 - **Aba congelada pelo Chrome:** o Chrome é aberto com `--disable-background-timer-throttling`, `--disable-backgrounding-occluded-windows`, `--disable-renderer-backgrounding` e sem detecção de oclusão/economia de memória — a janela fica fora da tela e, sem isso, o Chrome tratava a aba como em segundo plano (timers lentos, Page Lifecycle *freeze*, descarte da aba).
 - **Prevenção:** a Lista de Espera é recarregada a cada 30 min (sem alarme tocando). Dá para reabrir o Chrome a cada N horas (`watchdog_reiniciar_chrome_horas`, desligado por padrão).
-- **Reinício programado (desde a 2.1.2):** o programa inteiro se reinicia a cada `reiniciar_a_cada_min` minutos (padrão `60`). O watchdog confere a cada 15 s e, na hora, usa o mesmo caminho do N3: fecha o Chrome e o chromedriver, limpa o perfil e relança (código 75 para o supervisor, ou uma instância nova sem supervisor). Com a janela vermelha aberta, a voz falando ou a pausa do CIENTE valendo, ele **adia** até terminar. A pausa do CIENTE é gravada em `logs/pausa.json` antes de qualquer reinício e retomada no processo novo. O log mostra `reinicio programado (60 min)`. Esse reinício não conta no limite de 4 por hora do N3.
+- **Reinício programado (desde a 2.1.2):** o programa inteiro se reinicia a cada `reiniciar_a_cada_min` minutos (padrão `60`). O watchdog confere a cada 15 s e, na hora, usa o mesmo caminho do N3: fecha o Chrome e o chromedriver, limpa o perfil e relança (código 75 para o supervisor, ou uma instância nova sem supervisor). Com a janela vermelha aberta, a voz falando ou a pausa do CIENTE valendo, ele **adia** até terminar. A pausa do CIENTE é gravada em `logs/pausa.json` antes de qualquer reinício e retomada no processo novo. O log mostra `reinicio programado (60 min)`. Esse reinício não conta no limite de 5 por hora do N3.
 - **Tempo limite** em toda chamada do navegador (`page_load_timeout` 60 s, `script_timeout` 30 s): nada fica pendurado para sempre.
 - **Instância única:** um segundo monitor aberto no mesmo PC sai sozinho (antes os dois brigavam pelo perfil do Chrome e a fala saía duplicada).
 
@@ -140,7 +152,7 @@ A regra é: **visível = maximizada; escondida = do tamanho da tela real**. Nunc
 
 O Chrome agora abre **com a sandbox ligada** (sem `--no-sandbox`; só se não abrir de jeito nenhum ele tenta sem, como último recurso) e com `--disable-extensions`, `--disable-background-networking`, `--disable-component-update`, `--disable-sync`, `--mute-audio` e cache em disco de 50 MB.
 
-**Supervisor (`iniciar_monitor.pyw`):** além de relançar no código 75, confere o `logs/heartbeat.json` a cada 30 s. Se o heartbeat do monitor ficar parado por mais de 10 min (fora dos 5 min de inicialização e da volta da suspensão do PC), ele encerra o processo pelo PID (com os filhos) e relança. Versões antigas do monitor, que não gravam heartbeat, nunca são mortas por isso.
+**Supervisor (`iniciar_monitor.pyw`):** além de relançar no código 75, confere o `logs/heartbeat.json` a cada 30 s. Se o heartbeat do monitor ficar parado por mais de 5 min (era 10 até a 2.2.1; fora dos 5 min de inicialização e da volta da suspensão do PC), ele encerra o processo pelo PID (com os filhos) e relança. Desde a 2.2.2 também relança quando o heartbeat anda mas o monitor está ativo há mais de 30 min sem nenhum ciclo OK (reserva da escada; nunca com alarme tocando), com no máximo 5 relançamentos forçados por hora (depois espera 10 min). Versões antigas do monitor, que não gravam heartbeat, nunca são mortas por isso.
 
 **Janela do alarme:** o texto vem da senha real e da pausa configurada (nada fixo), **Enter / Espaço / Esc = CIENTE**, a janela puxa o foco e o tamanho acompanha o DPI e cabe na tela.
 
@@ -168,7 +180,7 @@ Desligado por padrão. Com `heartbeat_remoto_url` preenchida (só `https://`), c
 
 ## Testes
 
-- `python -m pytest tests` — unidade (filtros, fala por filtro e migração do `filtros.json`, horário, reinício diário, textos do alarme, assinatura com vetores do RFC 8032, DPAPI, heartbeat, reinício que não sai com código 0), conferência do `versao.json` e o supervisor de verdade com um monitor falso (código 75, queda, heartbeat parado).
+- `python -m pytest tests` — unidade (filtros, fala por filtro e migração do `filtros.json`, horário, reinício diário, textos do alarme, assinatura com vetores do RFC 8032, DPAPI, heartbeat, reinício que não sai com código 0, escada de recuperação com driver falso), conferência do `versao.json` e o supervisor de verdade com um monitor falso (código 75, queda, heartbeat parado).
 - `MONITOR_TESTES_CHROME=1 python -m pytest tests -k harness -s` (ou `python tests/harness/teste_monitor.py`) — bateria completa com Chrome headless e um **Feegow simulado local** (127.0.0.1, nunca o Feegow real), incluindo supervisor + monitor reais reiniciando e voltando a monitorar.
 - O GitHub Actions (`.github/workflows/ci.yml`, `windows-latest`) roda `py_compile`, `gerar_versao.py --verificar` e o `pytest` a cada push.
 

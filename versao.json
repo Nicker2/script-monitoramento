@@ -1,18 +1,18 @@
 {
-  "versao": "2.2.1",
+  "versao": "2.2.2",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "c0eab988105f7db607ef181dedce6394f11e0e33c515a2df86de0fed310e5b42",
-  "tamanho": 217173,
+  "sha256": "9f228a1022b8acaa17288c74e021f57dcddca3b003b09f13ad15c0032e38d1e0",
+  "tamanho": 231725,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
-      "sha256": "8d1a3967c5a4f66c96c6f89a8988af6953ba2c83445d141d3b39c98a1d4ddf7a",
-      "tamanho": 7144
+      "sha256": "4fa73ba2899f2126cc77b2e8a93fac6c6f387a026e938a65a1872d7430fe8308",
+      "tamanho": 9965
     }
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "Chrome maximizado quando visivel; escondido com o tamanho da tela real (minimo 1280x720) para o Feegow renderizar igual em 1080p e 720p.",
+  "notas": "Escada de recuperacao: Chrome/chromedriver sumiu -> recria o driver e reloga; 3 reaberturas sem ciclo OK em 10 min ou 3 min sem ciclo OK -> reinicia o programa (max 5/h, depois espera 10 min; nunca durante alarme); supervisor relanca com heartbeat parado > 5 min.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "f/bHq0yeygNxn8FhXos7Dlhka0p1VMvx0mxGdImkARVumYqGyvEDSZvN7lfiL8pbs0mhA6J5cdrSvOFujL11DQ=="
+  "assinatura": "zxcSkRAMBTG7z9unD2qy29Q5AVIu0DXtqwq2V/RsC6MxtjqBOCsb62HvBdviu3NzwYVUBBOYDrHYkndv1O6XBA=="
 }

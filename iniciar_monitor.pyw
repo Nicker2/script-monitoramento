@@ -6,7 +6,10 @@ Duplo clique (roda com pythonw.exe, sem janela de console). Ele:
   * relança com espera crescente se o monitor cair (5 s, 10 s, 20 s ... até 5 min);
   * para quando o usuário escolhe "Encerrar Sistema" (código 0);
   * mata e relança o monitor se ele congelar: o monitor grava logs/heartbeat.json
-    a cada 15 s; parado há mais de 10 min (fora da inicialização) = travado;
+    a cada 15 s; parado há mais de 5 min (fora da inicialização) = travado;
+  * reserva da escada de recuperação (2.2.2): heartbeat andando, mas o monitor
+    "ativo" sem nenhum ciclo OK há mais de 30 min (e sem alarme tocando) = relança;
+  * no máximo 5 relançamentos forçados por hora; passou disso espera 10 min;
   * grava tudo em logs/supervisor.log (com rotação) e não roda duas vezes.
 
 A atualização pelo GitHub, o watchdog do navegador e o log do monitor ficam
@@ -35,10 +38,15 @@ CODIGO_MORTO_POR_HEARTBEAT = -9
 NOME_MUTEX = "Local\\MonitorFeegowSupervisor"
 ESPERA_MAXIMA = 300
 # (as variáveis MONITOR_SUP_* existem só para os testes automáticos encurtarem os tempos)
-LIMITE_HEARTBEAT = int(os.environ.get("MONITOR_SUP_LIMITE_HEARTBEAT") or 600)   # s sem heartbeat = travado
+LIMITE_HEARTBEAT = int(os.environ.get("MONITOR_SUP_LIMITE_HEARTBEAT") or 300)   # s sem heartbeat = travado
+LIMITE_SEM_OK = int(os.environ.get("MONITOR_SUP_LIMITE_SEM_OK") or 1800)   # s ativo sem ciclo OK = relança
+MAX_MORTES_POR_HORA = int(os.environ.get("MONITOR_SUP_MAX_MORTES") or 5)
+ESPERA_LIMITE_MORTES = int(os.environ.get("MONITOR_SUP_ESPERA_LIMITE") or 600)   # s segurando depois do limite
 FOLGA_INICIALIZACAO = int(os.environ.get("MONITOR_SUP_FOLGA") or 300)   # s após abrir/voltar da suspensão
 INTERVALO_CONFERENCIA = int(os.environ.get("MONITOR_SUP_INTERVALO") or 30)   # s entre conferências
 _MUTEX = None
+_MORTES = []            # horários dos relançamentos forçados (heartbeat parado / sem ciclo OK)
+_MORTES_BLOQUEIO = {"ate": 0.0, "avisou": False}
 
 
 def log(mensagem):
@@ -102,6 +110,44 @@ def heartbeat_parado(pid, folga_ate, agora=None):
         return False
 
 
+def sem_ciclo_ok_demais(pid, folga_ate, agora=None):
+    """Reserva do N3: heartbeat DESTE processo andando, monitor ativo (não está
+    sem internet / fora do horário / aguardando login), sem alarme tocando e sem
+    nenhum ciclo OK há mais de LIMITE_SEM_OK. Monitor antigo (sem esses campos) = False."""
+    agora = agora or time.time()
+    if agora < folga_ate:
+        return False
+    try:
+        with open(HEARTBEAT, "r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+        if int(dados.get("pid") or 0) != int(pid) or "ok_ref_ts" not in dados:
+            return False
+        if not dados.get("ativo") or dados.get("alarme"):
+            return False
+        return agora - float(dados.get("ok_ref_ts") or agora) > LIMITE_SEM_OK
+    except Exception:
+        return False
+
+
+def pode_forcar_reinicio(agora=None):
+    """Proteção contra laço: até MAX_MORTES_POR_HORA relançamentos forçados por hora;
+    passou disso, segura ESPERA_LIMITE_MORTES e libera uma nova tentativa."""
+    agora = agora or time.time()
+    if agora < _MORTES_BLOQUEIO["ate"]:
+        if not _MORTES_BLOQUEIO["avisou"]:
+            _MORTES_BLOQUEIO["avisou"] = True
+            log(f"Limite de {MAX_MORTES_POR_HORA} relançamentos forçados por hora atingido — "
+                f"segurando até {datetime.datetime.fromtimestamp(_MORTES_BLOQUEIO['ate']):%H:%M}.")
+        return False
+    _MORTES[:] = [t for t in _MORTES if agora - t < 3600]
+    if len(_MORTES) >= MAX_MORTES_POR_HORA and not _MORTES_BLOQUEIO["ate"]:
+        _MORTES_BLOQUEIO.update(ate=agora + ESPERA_LIMITE_MORTES, avisou=False)
+        return pode_forcar_reinicio(agora)
+    _MORTES_BLOQUEIO.update(ate=0.0, avisou=False)
+    _MORTES.append(agora)
+    return True
+
+
 def matar_arvore(pid):
     """Mata o monitor travado e os filhos dele (chromedriver/Chrome) pelo PID."""
     try:
@@ -125,9 +171,15 @@ def esperar_monitor(processo, inicio):
             # o relógio pulou: PC suspenso/hibernado. Dá a folga de novo.
             folga_ate = agora + FOLGA_INICIALIZACAO
         ultima_volta = agora
+        motivo = ""
         if heartbeat_parado(processo.pid, folga_ate, agora):
-            log(f"O monitor (PID {processo.pid}) está sem heartbeat há mais de {LIMITE_HEARTBEAT}s "
-                "— parece travado. Encerrando o processo e relançando.")
+            motivo = (f"O monitor (PID {processo.pid}) está sem heartbeat há mais de {LIMITE_HEARTBEAT}s "
+                      "— parece travado.")
+        elif sem_ciclo_ok_demais(processo.pid, folga_ate, agora):
+            motivo = (f"O monitor (PID {processo.pid}) está ativo mas sem nenhum ciclo OK há mais de "
+                      f"{LIMITE_SEM_OK // 60} min — a recuperação interna não resolveu.")
+        if motivo and pode_forcar_reinicio(agora):
+            log(motivo + " Encerrando o processo e relançando.")
             matar_arvore(processo.pid)
             try:
                 processo.wait(timeout=30)
