@@ -55,7 +55,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.1.0"
+VERSAO = "2.1.1"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -2590,7 +2590,7 @@ def _credenciais_recusadas(texto):
     return ("incorret" in texto) or ("não conferem" in texto) or ("nao conferem" in texto)
 
 
-def _confirmar_troca_sessao(driver_alvo, timeout=90.0):
+def _confirmar_troca_sessao(driver_alvo, senha=None, timeout=90.0):
     """SSO: com outra máquina logada o form vem com input[name=disconnect].
 
     Confirmar derruba a outra máquina (é assim que o SSO funciona). Se o input
@@ -2609,6 +2609,14 @@ def _confirmar_troca_sessao(driver_alvo, timeout=90.0):
             if not avisou:
                 log_msg("⚠️ Sessão ativa em outra máquina. Confirmando a troca de sessão (a outra máquina será desconectada)...")
                 avisou = True
+            if senha:
+                try:
+                    campo = driver_alvo.find_element(By.CSS_SELECTOR, "#password")
+                    if not (campo.get_attribute("value") or "").strip():
+                        campo.clear()
+                        campo.send_keys(senha)
+                except Exception:
+                    pass
             _enviar_form(driver_alvo)
             time.sleep(2.0)
             continue
@@ -2642,7 +2650,7 @@ def login_sso(usuario, senha, url_sso):
             return False, "e-mail recusado na etapa 1 do SSO"
         try:
             if driver.find_elements(By.CSS_SELECTOR, "input[name='disconnect']"):
-                if _confirmar_troca_sessao(driver):
+                if _confirmar_troca_sessao(driver, senha):
                     return True, "sessão assumida direto no handshake do SSO"
         except Exception:
             pass
@@ -2654,12 +2662,60 @@ def login_sso(usuario, senha, url_sso):
         return False, "não encontrei o botão de enviar a senha no SSO"
     log_msg("SSO: senha enviada. Validando com o servidor...")
 
-    if _confirmar_troca_sessao(driver, timeout=90):
-        return True, "login SSO concluído"
+    # Conflito de sessao: assume pelo reenvio rapido antes de esperar o site.
+    ok_bypass, motivo_bypass = _executar_bypass_sso(usuario, senha)
+    if ok_bypass:
+        return True, motivo_bypass
     if _credenciais_recusadas(_texto_corpo(driver)):
         return False, "senha incorreta no SSO"
-    return False, "o SSO não confirmou o login a tempo"
+    return False, motivo_bypass
 
+
+BYPASS_SSO_INTERVALO_MS = 1500      # reenvio do login no SSO a cada 1,5 s
+BYPASS_SSO_MAX_TENTATIVAS = 40       # ~60 s no pior caso
+
+# Bypass do SSO: o form de conflito volta com input[name=disconnect] e a SENHA
+# APAGADA. Reenviar o login em intervalo curto assume a sessao rapido — o
+# handshake nativo do site faz check de 5 em 5 s por ate 60 s.
+JS_BYPASS_SESSAO_SSO = """
+const user = arguments[0], pass = arguments[1];
+const intervalo = arguments[2], maxTentativas = arguments[3];
+const alvo = window.location.origin + '/main/sso/';
+window.__monitorBypassParar = false;
+window.__monitorBypass = {tentativas: 0, estado: 'rodando'};
+(async function() {
+    for (let i = 0; i < maxTentativas && !window.__monitorBypassParar; i++) {
+        window.__monitorBypass.tentativas = i + 1;
+        try {
+            const corpo = new URLSearchParams();
+            corpo.set('step', 'password');
+            corpo.set('User', user);
+            corpo.set('password', pass);
+            const res = await fetch(alvo, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: corpo.toString()
+            });
+            const html = await res.text();
+            if (html.indexOf('E-mail ou senha incorretos') !== -1 ||
+                html.indexOf('conferem') !== -1) {
+                window.__monitorBypass.estado = 'credenciais';
+                return;
+            }
+            const aindaConflito = html.indexOf('conectado em outra') !== -1 ||
+                                  /name=["']disconnect["']/i.test(html);
+            if (!aindaConflito) {
+                window.__monitorBypass.estado = 'ok';
+                window.location.href = res.url || (window.location.origin + '/main/');
+                return;
+            }
+        } catch (e) { /* rede oscilou: tenta de novo no proximo ciclo */ }
+        await new Promise(function (r) { setTimeout(r, intervalo); });
+    }
+    window.__monitorBypass.estado = window.__monitorBypassParar ? 'parado' : 'desistiu';
+})();
+"""
 
 BYPASS_MAX_TENTATIVAS = 120          # tentativas do JS antes de desistir sozinho
 BYPASS_ESPERA_INICIAL_MS = 1000      # 1 s, crescendo 1,5x até 10 s
@@ -2705,6 +2761,47 @@ def _parar_bypass_js():
         driver.execute_script("window.__monitorBypassParar = true;")
     except Exception:
         pass
+
+
+def _executar_bypass_sso(usuario, senha):
+    """Conflito de sessao no SSO: reenvia o POST do login em intervalo curto.
+
+    O site sozinho faz o handshake disconnect/check/force com check de 5 s e teto
+    de 60 s. Aqui o login e reenviado a cada BYPASS_SSO_INTERVALO_MS ate a
+    resposta deixar de ser a tela de conflito. Senha errada aborta na hora.
+    """
+    try:
+        driver.execute_script(JS_BYPASS_SESSAO_SSO, usuario, senha,
+                              BYPASS_SSO_INTERVALO_MS, BYPASS_SSO_MAX_TENTATIVAS)
+    except Exception as e:
+        log_msg(f"Nao consegui iniciar o reenvio automatico no SSO ({e}). "
+                "Caindo no handshake normal do site.")
+        return _confirmar_troca_sessao(driver, senha), "handshake do site"
+
+    log_msg("Sessao dupla no SSO: reenviando o login a cada "
+            f"{BYPASS_SSO_INTERVALO_MS / 1000:.1f}s (ate {BYPASS_SSO_MAX_TENTATIVAS} tentativas)...")
+
+    fim = time.time() + BYPASS_LIMITE_SEGUNDOS
+    while time.time() < fim:
+        if _ENCERRANDO or _PEDIDO_REINICIO_CHROME:
+            _parar_bypass_js()
+            return False, "bypass interrompido (encerrando/reiniciando)"
+        if _sessao_ativa(driver):
+            log_msg("Sessao assumida no SSO pelo reenvio do login.")
+            return True, "bypass SSO concluido"
+        try:
+            estado = driver.execute_script("return (window.__monitorBypass || {}).estado || '';")
+        except Exception:
+            estado = ""   # pagina navegando
+        if estado == "credenciais":
+            return False, "senha incorreta no SSO"
+        if estado == "desistiu":
+            return False, f"o reenvio desistiu depois de {BYPASS_SSO_MAX_TENTATIVAS} tentativas"
+        registrar_batimento(ok=False)
+        time.sleep(0.5)
+
+    _parar_bypass_js()   # nao deixa o JS martelando o servidor
+    return False, "o reenvio do login no SSO nao confirmou a tempo"
 
 
 def login_legado(usuario, senha, url_login):
