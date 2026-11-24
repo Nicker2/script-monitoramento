@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe"><b>⬇️ Baixar o MonitorFeegow.exe</b></a>
+  <a href="https://github.com/Nicker2/script-monitoramento/releases/latest"><b>⬇️ Baixar a versão Python (ZIP)</b></a>
   &nbsp;·&nbsp;
   <a href="#-instalação">📦 Instalar</a>
   &nbsp;·&nbsp;
@@ -63,7 +63,7 @@ O script abre o Feegow num Chrome controlado pelo Selenium, entra na **Lista de 
 | 🛡️ | **Auto-recuperação** | Um watchdog refaz o login, recarrega a página, reabre o Chrome ou reinicia o programa quando algo trava. Um supervisor relança o monitor se ele cair. |
 | 🔄 | **Atualização automática** | Consulta o `versao.json` assinado (Ed25519) deste repositório, instala num momento seguro e volta para a versão anterior se a nova falhar. |
 | 🔐 | **Senha protegida** | A senha do Feegow fica cifrada pelo Windows (DPAPI) e o e-mail aparece mascarado no log. |
-| 🧩 | **Sem instalar nada (opcional)** | Existe um `MonitorFeegow.exe` compilado com Nuitka, que já leva Python e bibliotecas. O ChromeDriver certo é baixado sozinho. |
+| 🧩 | **Instalação simples** | Um ZIP com tudo na [release](https://github.com/Nicker2/script-monitoramento/releases/latest): Python 3.12, extrair, duplo clique. As bibliotecas e o ChromeDriver certo são instalados sozinhos. (O `.exe` foi descontinuado.) |
 | 🧹 | **Limpeza de disco** | `LIMPAR_LIXO.py` acha e apaga o lixo que o Chrome/ChromeDriver deixam no PC. |
 
 <p align="center">
@@ -111,7 +111,7 @@ A comparação **ignora acentos, maiúsculas e pontuação**: `PRIORITARIA` no `
 | 🪟 | **Windows 10 ou 11 (64 bits)** | A bandeja, a senha protegida (DPAPI) e o início automático são do Windows. |
 | 🌐 | **Google Chrome** instalado | O ChromeDriver compatível é baixado sozinho para `%LOCALAPPDATA%\MonitorFeegow\drivers`. |
 | 🔑 | **Usuário do Feegow** com acesso à Lista de Espera | Prefira um usuário só para o monitor: o mesmo usuário em dois PCs derruba a sessão do outro. |
-| 🐍 | **Python 3** *(só se não usar o `.exe`)* | O CI testa no Python 3.12. As bibliotecas estão no [`requirements.txt`](requirements.txt). |
+| 🐍 | **Python 3.12** (marque *Add to PATH* ao instalar) | O CI testa no Python 3.12. As bibliotecas estão no [`requirements.txt`](requirements.txt). |
 | 📶 | **Internet** | Para o Feegow e para gerar a voz (com cache permanente; sem internet usa a voz do Windows). |
 
 Bibliotecas: `selenium`, `webdriver-manager`, `gTTS`, `pygame`, `pystray`, `Pillow`, `psutil`. O script confere e instala as que faltarem antes de abrir.
@@ -120,24 +120,32 @@ Bibliotecas: `selenium`, `webdriver-manager`, `gTTS`, `pygame`, `pystray`, `Pill
 
 ## 📦 Instalação
 
-### Opção A: executável pronto (recomendado para os PCs da recepção)
+### Opção A: ZIP pronto em Python (recomendado para os PCs da recepção)
 
-1. Baixe o **[MonitorFeegow.exe](https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe)** ([todas as versões](https://github.com/Nicker2/script-monitoramento/releases)).
-2. Salve numa pasta só dele, por exemplo `C:\MonitorFeegow\`.
-3. Dê duplo clique. Na primeira vez ele cria `filtros.json` e `credenciais.json` ao lado do `.exe` e **pede o login**.
-4. Salve o login: o monitoramento começa sozinho.
+1. Instale o **Python 3.12** (<https://www.python.org/downloads/windows/>). Na primeira tela do instalador marque **"Add python.exe to PATH"**.
+2. Baixe o **`MonitorSenhas-<versão>-python.zip`** da **[última versão](https://github.com/Nicker2/script-monitoramento/releases/latest)** ([todas as versões](https://github.com/Nicker2/script-monitoramento/releases)).
+3. Extraia numa pasta fixa, por exemplo `C:\MonitorSenhas\` (não rode de dentro do ZIP nem da pasta Downloads).
+4. Dê duplo clique em **`iniciar_monitor.pyw`**. Na primeira vez ele instala as bibliotecas que faltarem (pode levar alguns minutos), cria `filtros.json`/`credenciais.json` e **pede o login**. Salve o login: o monitoramento começa sozinho.
+5. Para ligar junto com o Windows, rode **`instalar_inicio_automatico.bat`** (veja abaixo).
 
 ```
-📁 C:\MonitorFeegow
-   ├── MonitorFeegow.exe
-   ├── filtros.json        ← criado no primeiro uso
-   └── credenciais.json    ← criado no primeiro uso (nunca compartilhe)
+📁 C:\MonitorSenhas
+   ├── SCRIPT_EXPLICA.py
+   ├── iniciar_monitor.pyw        ← é este que você abre
+   ├── filtros.json
+   ├── credenciais.exemplo.json   ← só modelo; o credenciais.json é criado no primeiro uso (nunca compartilhe)
+   ├── requirements.txt
+   ├── instalar_inicio_automatico.bat / remover_inicio_automatico.bat
+   ├── ferramentas\inicio_automatico.ps1
+   └── LEIA-ME.txt
 ```
 
-> [!NOTE]
-> O Windows SmartScreen ou o antivírus pode avisar que o `.exe` é desconhecido (ele não é assinado digitalmente). Libere a pasta.
+Depois disso as atualizações são **automáticas** (veja [Atualização automática](docs/AVANCADO.md#atualização-automática)); não precisa baixar o ZIP de novo.
 
-### Opção B: com Python
+> [!WARNING]
+> **O `MonitorFeegow.exe` foi descontinuado** (parou na 2.2.0, as releases com `.exe` foram retiradas e ele não recebe mais atualizações). PC que ainda usa o `.exe`: encerre-o pela bandeja (**Encerrar Sistema**), rode `remover_inicio_automatico.bat` da pasta antiga, apague o `.exe` e **reinstale pela Opção A**. Pode copiar o `filtros.json` e o `credenciais.json` da pasta antiga para a nova.
+
+### Opção B: clone do git (desenvolvimento)
 
 ```bash
 git clone https://github.com/Nicker2/script-monitoramento.git
@@ -145,7 +153,7 @@ cd script-monitoramento
 pip install -r requirements.txt   # opcional: o script instala o que faltar
 ```
 
-Depois, dê duplo clique em **`iniciar_monitor.pyw`** (ou rode `python SCRIPT_EXPLICA.py` para testar com console). Na primeira execução ele cria os arquivos de configuração e abre a janela de login.
+Depois, dê duplo clique em **`iniciar_monitor.pyw`** (ou rode `python SCRIPT_EXPLICA.py` para testar com console). Na primeira execução ele cria os arquivos de configuração e abre a janela de login. Pastas que são clone do git não se atualizam sozinhas (use `git pull`).
 
 > [!TIP]
 > PC sem internet ou com download bloqueado? Baixe o `chromedriver-win64.zip` da mesma versão do seu Chrome em <https://googlechromelabs.github.io/chrome-for-testing/> e coloque o `chromedriver.exe` na pasta do script.
@@ -161,7 +169,6 @@ Duplo clique em **`instalar_inicio_automatico.bat`** (cria um atalho na pasta In
 | Situação | O que fazer |
 | :--- | :--- |
 | Abrir o monitor (com Python) | Duplo clique em **`iniciar_monitor.pyw`**. Não abre janela: o ícone aparece na bandeja. |
-| Abrir o monitor (sem Python) | Duplo clique no **`MonitorFeegow.exe`**. |
 | Ver o painel e o navegador | Clique no ícone da bandeja (perto do relógio). |
 | Reiniciar | Botão direito no ícone → **Reiniciar monitor**. |
 | Fechar de vez | Botão direito no ícone → **Encerrar Sistema** (fecha o Chrome e o supervisor). |
@@ -170,7 +177,7 @@ Duplo clique em **`instalar_inicio_automatico.bat`** (cria um atalho na pasta In
 **Cor do ícone da bandeja:** 🟢 conectado · 🟠 recuperando · ⚪ sem internet · 🔴 falhas repetidas. Passe o mouse para ver o estado (aparece **"Sem áudio"** quando não há como falar).
 
 > [!IMPORTANT]
-> Use sempre o `iniciar_monitor.pyw` (ou o `.exe`). Ele é o supervisor: relança o monitor se cair, aplica os reinícios do watchdog e da atualização e não deixa abrir duas cópias. Os arquivos `executar_iniciar_explica.BAT`, `iniciar_explica.py` e `executar_invisivel_explica.py` ficaram só para não quebrar atalhos antigos.
+> Use sempre o `iniciar_monitor.pyw`. Ele é o supervisor: relança o monitor se cair, aplica os reinícios do watchdog e da atualização e não deixa abrir duas cópias. Os arquivos `executar_iniciar_explica.BAT`, `iniciar_explica.py` e `executar_invisivel_explica.py` ficaram só para não quebrar atalhos antigos.
 
 ---
 
@@ -325,7 +332,7 @@ Atalhos:
 
 ```bash
 python -m pytest tests                              # testes (o CI roda no GitHub Actions a cada push)
-compilar.bat                                        # gera dist\MonitorFeegow.exe (Nuitka)
+compilar.bat                                        # gera dist\MonitorFeegow.exe (Nuitka; .exe descontinuado, não é mais publicado)
 python ferramentas/gerar_versao.py --notas "..."    # monta e assina o versao.json
 ```
 

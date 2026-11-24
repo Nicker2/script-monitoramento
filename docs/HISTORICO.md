@@ -9,6 +9,7 @@
 - Escada de recuperação, cronômetro de login, intervalo mínimo de 30 s e adiamento durante alarme: sem mudança.
 - Testes novos (`tests/test_sessao_guardada.py`): sessão válida reaproveitada sem Chrome, expirada/recusada → apaga e loga, arquivo corrompido → apaga e loga, regravação após relogin, erro de rede não apaga, nada do token no log, arquivo cifrado sem o token em texto.
 - Publicada só como `.py` (sem `.exe`).
+- **Distribuição:** release nova *v2.3.4 — versão Python* com o ZIP `MonitorSenhas-2.3.4-python.zip` (script, supervisor, `filtros.json` padrão, `requirements.txt`, início automático, modelo de credenciais e `LEIA-ME.txt`). As releases com `MonitorFeegow.exe` (v2.2.0, v2.1.2, v1.0.0) foram apagadas (as tags git ficaram). O `.exe` está descontinuado: PCs com `.exe` devem ser reinstalados pela versão Python.
 
 ### v2.3.3 — cronômetro de login e reinício sem teto por hora
 

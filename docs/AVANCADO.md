@@ -142,7 +142,7 @@ Configuração no `filtros.json` (ou na aba **Sistema**):
 O programa consulta `https://raw.githubusercontent.com/Nicker2/script-monitoramento/<canal>/versao.json` a cada **60 min** (primeira consulta 90 s depois de abrir). Se a versão de lá for maior que a instalada:
 
 1. Espera um **momento seguro**: sem alarme tocando, sem recuperação em andamento e com a página respondendo.
-2. Baixa e **valida**: com o `.py`, confere o tamanho mínimo, a primeira linha (`# MONITOR-FEEGOW-SCRIPT`), se o `VERSAO` do arquivo é o mesmo do `versao.json`, o `sha256` e se o código compila. Com o `.exe`, exige `sha256_exe` e cabeçalho `MZ`.
+2. Baixa e **valida**: com o `.py`, confere o tamanho mínimo, a primeira linha (`# MONITOR-FEEGOW-SCRIPT`), se o `VERSAO` do arquivo é o mesmo do `versao.json`, o `sha256` e se o código compila. Com o `.exe` (descontinuado), exige `sha256_exe` e cabeçalho `MZ`; com `sha256_exe` vazio, o `.exe` não baixa nada e só avisa no log.
 3. Guarda a versão atual como `SCRIPT_EXPLICA.py.anterior` (ou `MonitorFeegow.exe.anterior`), coloca a nova no lugar e reinicia.
 4. A versão nova fica **em teste** (`atualizacao_estado.json`) até o primeiro ciclo de monitoramento OK. Se ela reiniciar 3 vezes sem chegar lá, ou passar 20 min online sem conseguir monitorar, **volta sozinha para a anterior** e essa versão fica bloqueada naquela máquina.
 
@@ -239,7 +239,7 @@ O `versao.json` é assinado com uma chave **Ed25519**. A chave **pública** est�
 2. `python ferramentas/gerar_versao.py --notas "o que mudou"` — calcula os sha256 (em LF, como o GitHub serve), inclui o `iniciar_monitor.pyw` e assina. Precisa do pacote `cryptography` na máquina de quem publica (`pip install cryptography`). Outra chave: `--chave caminho.pem` ou variável `MONITOR_CHAVE_RELEASE`. Canal beta: `--canal beta`.
 3. Commit do `SCRIPT_EXPLICA.py` + `versao.json` (+ `iniciar_monitor.pyw`) **juntos**.
 4. `python ferramentas/gerar_versao.py --verificar --git-ref HEAD` — confere sha256, versão e assinatura contra o que foi commitado (com `core.autocrlf=true` o disco tem CRLF, mas o blob é LF). Depois, push.
-5. Para quem usa o `.exe`: compile (`compilar.bat`, que lê a versão do script), anexe o `MonitorFeegow.exe` na release e rode o passo 2 com `--exe dist\MonitorFeegow.exe`.
+5. Release no GitHub (desde a 2.3.4, só Python): `gh release create vX.Y.Z --title "vX.Y.Z — versão Python" --latest` com o ZIP `MonitorSenhas-X.Y.Z-python.zip` (`SCRIPT_EXPLICA.py`, `iniciar_monitor.pyw`, `filtros.json`, `requirements.txt`, os dois `.bat` de início automático + `ferramentas\inicio_automatico.ps1`, `credenciais.exemplo.json` e `LEIA-ME.txt`; nunca o `credenciais.json`). A release é só para instalar do zero: os PCs instalados se atualizam pelo `versao.json`. O `.exe` está descontinuado: **não** use `--exe` (o `sha256_exe` fica vazio).
 
 As máquinas conferem a assinatura com o pacote `cryptography` se ele existir e, senão (ex.: `.exe`), com uma verificação Ed25519 em Python puro embutida no script — nunca ficam sem verificar.
 
@@ -256,6 +256,9 @@ Desligado por padrão. Com `heartbeat_remoto_url` preenchida (só `https://`), c
 - O GitHub Actions (`.github/workflows/ci.yml`, `windows-latest`) roda `py_compile`, `gerar_versao.py --verificar` e o `pytest` a cada push.
 
 ## Compilando um `.exe` (Nuitka)
+
+> [!WARNING]
+> **Descontinuado desde a 2.3.4:** o `.exe` não é mais publicado (as releases com `MonitorFeegow.exe` foram retiradas; a distribuição é o ZIP Python da release). O `versao.json` sai com `sha256_exe` vazio, então um `.exe` antigo que ainda esteja rodando só registra no log que a versão nova saiu sem `.exe` e continua na dele, sem baixar nada nem quebrar. Reinstale esses PCs pela versão Python. A receita abaixo ficou só como referência.
 
 O executável é gerado com [Nuitka](https://nuitka.net/), que compila o Python para código C nativo. Vantagem para PC de clínica: **não precisa instalar Python nem os pacotes** na máquina de destino — o `.exe` já leva tudo embutido.
 
