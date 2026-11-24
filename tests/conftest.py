@@ -61,3 +61,13 @@ def saidas(monkeypatch, monitor):
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+@pytest.fixture(autouse=True)
+def _sessao_isolada(request, tmp_path):
+    """2.3.4: cada teste que usa o monitor tem o seu sessao.dat (vazio) numa pasta própria."""
+    if "monitor" in request.fixturenames:
+        modulo = request.getfixturevalue("monitor")
+        mp = request.getfixturevalue("monkeypatch")
+        mp.setattr(modulo, "ARQ_SESSAO", str(tmp_path / "sessao_isolada" / "sessao.dat"))
+    yield

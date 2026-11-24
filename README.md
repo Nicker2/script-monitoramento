@@ -98,7 +98,7 @@ flowchart TD
     R -.-> C
 ```
 
-**Modo requisição (2.3.0, padrão):** depois do login, o monitor pega a fila direto da API do Feegow (uma requisição a cada `intervalo_requisicao_seg`, padrão 10 s) com o Chrome **fechado**, o que é mais leve e não depende da página. O Chrome volta a abrir só para relogar ou quando você mostra o painel pela bandeja. Se a API do Feegow mudar, o monitor volta sozinho para o modo antigo (clique no *Chamar senha*). Para usar sempre o modo antigo, ponha `"modo_busca": "chrome"` no `filtros.json`. Detalhes em [AVANCADO.md](docs/AVANCADO.md#modo-requisição-230).
+**Modo requisição (2.3.0, padrão):** depois do login, o monitor pega a fila direto da API do Feegow (uma requisição a cada `intervalo_requisicao_seg`, padrão 10 s) com o Chrome **fechado**, o que é mais leve e não depende da página. O Chrome volta a abrir só para relogar ou quando você mostra o painel pela bandeja. Se a API do Feegow mudar, o monitor volta sozinho para o modo antigo (clique no *Chamar senha*). Para usar sempre o modo antigo, ponha `"modo_busca": "chrome"` no `filtros.json`. Desde a 2.3.4 a sessão (o token) fica guardada, cifrada para o seu usuário do Windows, em `%LOCALAPPDATA%\MonitorFeegow\sessao.dat`: ao abrir ou reiniciar, se ela ainda valer, o monitor nem abre o Chrome nem faz login (nada de "sessão dupla" derrubando outra máquina); se não valer, apaga e loga de novo. Detalhes em [AVANCADO.md](docs/AVANCADO.md#modo-requisição-230).
 
 A comparação **ignora acentos, maiúsculas e pontuação**: `PRIORITARIA` no `filtros.json` casa com `PRIORITÁRIA` na tela, e `DILATAÇÃO-CCC` casa com `dilatacao ccc`.
 
@@ -233,7 +233,7 @@ Criado na primeira execução a partir do [`credenciais.exemplo.json`](credencia
 **Topo do painel:**
 
 ```
-● Conectado | último OK há 8s | v2.3.3
+● Conectado | último OK há 8s | v2.3.4
 ```
 
 **Linhas do `logs/monitor.log`** (um `🔎` por ticket do modal; as listas aparecem normalizadas, sem acento nem hífen):

@@ -2,6 +2,14 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.3.4 — sessão guardada: reinício sem login
+
+- **A sessão do modo requisição fica guardada** em `%LOCALAPPDATA%\MonitorFeegow\sessao.dat`, cifrada com a DPAPI do Windows (só o usuário atual daquele PC abre), com a validade (`exp` do JWT). A API só precisa do `x-access-token` (nenhum cookie), então só o token é guardado. Nunca vai para o log, para a pasta do programa nem para o repositório.
+- **Ao abrir/reiniciar:** sessão guardada com mais de 10 min de validade é testada com **uma** requisição; vale = usa direto, **sem abrir o Chrome e sem login** (o reinício programado de 60 min passa a custar ~1 s e não derruba outra sessão do mesmo usuário no SSO). Não vale (401/403/`SESSION_EXPIRED`/HTML/formato inválido), perto de vencer ou arquivo corrompido = apaga e faz o login normal, que grava a sessão nova. Todo token novo (relogin, renovação, painel) regrava o arquivo.
+- Escada de recuperação, cronômetro de login, intervalo mínimo de 30 s e adiamento durante alarme: sem mudança.
+- Testes novos (`tests/test_sessao_guardada.py`): sessão válida reaproveitada sem Chrome, expirada/recusada → apaga e loga, arquivo corrompido → apaga e loga, regravação após relogin, erro de rede não apaga, nada do token no log, arquivo cifrado sem o token em texto.
+- Publicada só como `.py` (sem `.exe`).
+
 ### v2.3.3 — cronômetro de login e reinício sem teto por hora
 
 - **Login demorou mais de 2 min = reinicia o programa.** Um cronômetro começa em qualquer tentativa de login (login ao abrir, relogin do modo requisição por sessão expirada ou renovação do token, relogin do modo Chrome, SSO com sessão dupla, bypass e retentativas) e para no login OK: token obtido no modo requisição, página logada no modo Chrome, ou qualquer ciclo OK. Retentativas e reaberturas do Chrome contam no mesmo cronômetro. Quem confere é a thread do watchdog (a cada 15 s), de fora da thread que está logando, então vale também com o Chrome travado. Passou de `login_timeout_seg` (padrão `120`, chave nova no `filtros.json`), o log mostra `⏱️ Login demorou mais de 2 min: reiniciando o programa` e o programa reinicia pelo mesmo caminho do menu *Reiniciar monitor* (`reiniciar_processo`).

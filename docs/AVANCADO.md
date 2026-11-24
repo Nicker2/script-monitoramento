@@ -41,7 +41,19 @@ x-access-token: <token do login>
      corpo: [{"id":220703,"Sigla":"MC","Senha":"105","NomeTipo":"MC",...}]
   ```
   O `corpo` (JSON compacto, até ~2000 caracteres) aparece quando a resposta muda em relação à anterior e em todo erro ou formato inesperado. O token e os headers nunca vão para o log. Campos com nome de paciente, CPF, telefone, celular, e-mail, CNS, nascimento etc. viram iniciais (`M.d.S.`) ou `***`; CPF e telefone soltos em qualquer texto também são mascarados. `NomeTipo` (o tipo da senha) fica como está.
-- O `status.json` (e o **Copiar diagnóstico**) ganhou `modo_busca`: configurado, em uso, reserva, ciclos OK, último tempo (ms), falhas seguidas e validade do token. O token em si nunca é gravado nem vai para o log.
+- O `status.json` (e o **Copiar diagnóstico**) ganhou `modo_busca`: configurado, em uso, reserva, ciclos OK, último tempo (ms), falhas seguidas e validade do token. O token em si nunca vai para o log nem para o `status.json` (só para a sessão guardada, cifrada; veja abaixo).
+
+### Sessão guardada (2.3.4)
+
+A API da fila só pede o header `x-access-token` (nenhum cookie), então o token **é** a sessão. Desde a 2.3.4 ele fica guardado para ser usado enquanto vale:
+
+- **Onde:** `%LOCALAPPDATA%\MonitorFeegow\sessao.dat` (perfil do usuário; nunca na pasta do programa nem no repositório).
+- **Como:** JSON com o token e o `exp` do JWT (lido sem validar a assinatura), **cifrado com a DPAPI do Windows** (`CryptProtectData`, escopo do usuário atual, entropia própria). Só esse usuário, nesse PC, consegue abrir; copiado para outro PC ou usuário, é lixo. Gravação atômica (`.tmp` + troca).
+- **Ao abrir/reiniciar** (modo requisição): se o arquivo existe e faltam **mais de 10 min** para vencer, o monitor faz **uma** requisição de teste. Resposta 200 no formato esperado = usa direto, **sem abrir o Chrome e sem login** (log: `🔑 Sessão reaproveitada (válida até HH:MM) — sem abrir o Chrome nem logar.`). 401/403, `SESSION_EXPIRED`, HTML, formato inválido, arquivo corrompido/ilegível ou a menos de 10 min de vencer = **apaga o arquivo** e segue o login normal (log: `🔑 Sessão guardada não vale mais (...): apagada; fazendo login.`). Erro de rede/servidor no teste não apaga (não prova nada): só segue pelo login normal.
+- **Regravação:** todo token novo (login ao abrir, relogin por sessão expirada, renovação 10 min antes de vencer, Chrome do painel com token mais novo) regrava o arquivo. Sessão expirada no meio do laço apaga o arquivo antes de relogar.
+- Falha ao gravar (DPAPI indisponível, disco) só gera um aviso no log; o monitor segue e, no próximo reinício, faz login como antes.
+- Para forçar um login novo: apague o `sessao.dat` (com o monitor fechado ou não; ele só é lido ao abrir/reiniciar).
+- A escada de recuperação, o cronômetro de login, o intervalo mínimo de 30 s e o adiamento durante alarme continuam iguais. O **Mostrar** da bandeja continua abrindo o Chrome (se o perfil do Chrome não estiver logado, ele loga).
 
 ### Recuperação no modo requisição
 

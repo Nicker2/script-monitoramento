@@ -56,7 +56,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.3.3"
+VERSAO = "2.3.4"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -281,7 +281,7 @@ _ENTROPIA_DPAPI = b"MonitorFeegow/credenciais/v1"
 PREFIXO_DPAPI = "dpapi:"
 
 
-def _dpapi(dados, proteger):
+def _dpapi(dados, proteger, entropia=None):
     """CryptProtectData / CryptUnprotectData (escopo do usuário atual do Windows)."""
     if os.name != "nt":
         raise OSError("DPAPI só existe no Windows")
@@ -301,7 +301,7 @@ def _dpapi(dados, proteger):
         buffers.append(buffer)
         return _BlobDpapi(len(bruto), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
 
-    entrada, entropia, saida = blob(dados), blob(_ENTROPIA_DPAPI), _BlobDpapi()
+    entrada, entropia, saida = blob(dados), blob(entropia or _ENTROPIA_DPAPI), _BlobDpapi()
     if not funcao(ctypes.byref(entrada), None, ctypes.byref(entropia), None, None,
                   0x01, ctypes.byref(saida)):   # 0x01 = CRYPTPROTECT_UI_FORBIDDEN
         raise OSError(ctypes.get_last_error(), "DPAPI recusou os dados")
@@ -2840,6 +2840,13 @@ def executar_sessao_chrome():
         aguardar_internet()
         if _ENCERRANDO:
             return None
+    if carregar_filtros().get("modo_busca") == "http" and not _HTTP["desligado"]:
+        token = tentar_sessao_guardada()   # 2.3.4: sessão válida = nada de Chrome/login
+        if token:
+            motivo = laco_http(token)
+            if motivo != VOLTAR_PARA_CHROME:
+                return motivo
+            _fechar_chrome()   # reserva: segue abrindo o Chrome e logando (modo antigo)
     _definir_etapa("abrindo_chrome")
     _atualizar_status("recuperando", "Abrindo o navegador...")
     if not _abrir_chrome():
@@ -3678,6 +3685,102 @@ def _token_serve(token, evitar=""):
     return not exp or exp - time.time() > HTTP_RENOVAR_ANTES_SEGUNDOS + 60
 
 
+# --- Sessão guardada (2.3.4) ----------------------------------------------------------
+# A API da fila só pede o header x-access-token (nenhum cookie): esse token É a sessão.
+# Ele fica em %LOCALAPPDATA%\MonitorFeegow\sessao.dat, CIFRADO com a DPAPI do Windows
+# (só este usuário, neste PC, consegue abrir), junto com o "exp" do JWT. Ao abrir ou
+# reiniciar: faltando mais de 10 min para vencer, UMA requisição de teste decide —
+# vale = usa direto, sem abrir o Chrome nem logar (sem "sessão dupla" no SSO);
+# não vale / arquivo ilegível = apaga e segue o login normal, que grava a sessão nova.
+# Nunca vai para o log, para a pasta do programa nem para o repositório.
+_ENTROPIA_SESSAO = b"MonitorFeegow/sessao/v1"
+ARQ_SESSAO = ""   # vazio = %LOCALAPPDATA%\MonitorFeegow\sessao.dat (os testes trocam)
+
+
+def arquivo_sessao():
+    if ARQ_SESSAO:
+        return ARQ_SESSAO
+    base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    return os.path.join(base, "MonitorFeegow", "sessao.dat")
+
+
+def gravar_sessao(token):
+    """Grava (cifrado, atômico) o token e a validade. True = gravou. Falha não para nada."""
+    if not token:
+        return False
+    caminho = arquivo_sessao()
+    temporario = caminho + ".tmp"
+    try:
+        dados = json.dumps({"v": 1, "token": token, "exp": validade_token(token),
+                            "gravado_em": time.time()}).encode("utf-8")
+        cifrado = b"MFS1" + _dpapi(dados, True, _ENTROPIA_SESSAO)
+        os.makedirs(os.path.dirname(caminho), exist_ok=True)
+        with open(temporario, "wb") as arquivo:
+            arquivo.write(cifrado)
+        os.replace(temporario, caminho)
+        return True
+    except Exception as erro:
+        _ignorar_erro(lambda: os.remove(temporario))
+        log_msg(f"⚠️ Não consegui guardar a sessão do Feegow ({type(erro).__name__}) — "
+                "no próximo reinício o monitor faz login de novo.")
+        return False
+
+
+def ler_sessao():
+    """(token, exp) do arquivo; None se não existe; ValueError/OSError se ilegível."""
+    caminho = arquivo_sessao()
+    if not os.path.exists(caminho):
+        return None
+    with open(caminho, "rb") as arquivo:
+        bruto = arquivo.read(1_000_000)
+    if not bruto.startswith(b"MFS1"):
+        raise ValueError("cabeçalho desconhecido")
+    dados = json.loads(_dpapi(bruto[4:], False, _ENTROPIA_SESSAO).decode("utf-8"))
+    token = str(dados.get("token") or "")
+    if not token:
+        raise ValueError("sem token")
+    return token, float(validade_token(token) or dados.get("exp") or 0)
+
+
+def apagar_sessao():
+    try:
+        os.remove(arquivo_sessao())
+    except FileNotFoundError:
+        pass
+    except Exception as erro:
+        log_msg(f"⚠️ Não consegui apagar a sessão guardada ({type(erro).__name__}).")
+
+
+def tentar_sessao_guardada():
+    """Token da sessão guardada se ela ainda vale (testada com UMA requisição); "" = logar.
+    Sessão recusada/ilegível/perto de vencer é apagada. Erro de rede no teste não apaga
+    (não prova nada), só segue pelo login normal — que regrava o arquivo."""
+    def descartar(motivo):
+        apagar_sessao()
+        log_msg(f"🔑 Sessão guardada não vale mais ({motivo}): apagada; fazendo login.")
+        return ""
+    try:
+        lida = ler_sessao()
+    except Exception as erro:
+        return descartar(f"arquivo ilegível: {type(erro).__name__}")
+    if lida is None:
+        return ""
+    token, exp = lida
+    if not exp or exp - time.time() <= HTTP_RENOVAR_ANTES_SEGUNDOS:
+        return descartar("vence em menos de 10 min" if exp else "sem validade")
+    try:
+        http_buscar_fila(token)
+    except (SessaoExpirada, FormatoInesperado) as erro:
+        return descartar(f"{type(erro).__name__}: {str(erro)[:60]}")
+    except Exception as erro:
+        log_msg(f"⚠️ Não deu para testar a sessão guardada ({_descrever_erro_http(erro)}) — "
+                "sigo pelo login normal.")
+        return ""
+    validade = datetime.datetime.fromtimestamp(exp).strftime("%H:%M")
+    log_msg(f"🔑 Sessão reaproveitada (válida até {validade}) — sem abrir o Chrome nem logar.")
+    return token
+
+
 def espera_progressiva(base, falhas):
     """Espera depois de `falhas` erros seguidos de rede/servidor: 10, 20, 40, 60, 60..."""
     teto = max(HTTP_ESPERA_MAXIMA, base)
@@ -3907,6 +4010,7 @@ def obter_token_via_chrome(evitar=""):
     token = _obter_token_via_chrome(evitar)
     if token:
         parar_cronometro_login()
+        gravar_sessao(token)
     return token
 
 
@@ -3972,6 +4076,7 @@ def _sincronizar_chrome_painel(token):
         return token
     if novo and novo != token and validade_token(novo) >= validade_token(token):
         _HTTP["token_exp"] = validade_token(novo)
+        gravar_sessao(novo)
         return novo
     return token
 
@@ -3998,6 +4103,7 @@ def _relogar_http(erro, token):
     2.3.1). A única proteção é a escada: 2 relogins falhos seguidos -> reinício.
     ("ok", novo) | ("falhou", token) | ("parar", token)."""
     log_msg(f"🔐 [N1] Modo requisição: sessão do Feegow expirada ({erro}) — entrando de novo agora.")
+    apagar_sessao()   # a guardada é esta que caiu; o relogin grava a nova
     _definir_etapa("login")
     _atualizar_status("recuperando", "Sessão caiu — entrando de novo...")
     novo = obter_token_via_chrome(evitar=token)
@@ -4039,6 +4145,7 @@ def sessao_modo_requisicao():
         log_msg(f"⚠️ Modo requisição: falha ao ler o token depois do login ({type(erro).__name__}).")
     if token:
         parar_cronometro_login()   # modo requisição: token obtido = login OK
+        gravar_sessao(token)
     else:
         log_msg("⚠️ Modo requisição: o token (sessionStorage 'tk') não apareceu depois do login — vou relogar.")
     return laco_http(token)

@@ -41,3 +41,6 @@ chaves/
 # sandbox dos testes com Chrome (tests/harness)
 tests/harness/sandbox/
 tests/harness/sandbox_localappdata/
+
+# sessão guardada do modo requisição (fica em %LOCALAPPDATA%, nunca aqui)
+sessao.dat
