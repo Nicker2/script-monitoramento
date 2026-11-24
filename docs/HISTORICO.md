@@ -2,6 +2,17 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.3.5 — alerta para o usuário quando o monitor para ou dá erro
+
+- **Ícone da bandeja por estado:** verde = monitorando OK; amarelo = recuperando/relogando; **vermelho** = sem ciclo OK há `alerta_falha_min` (padrão 3 min), com o motivo no tooltip.
+- **Balão com setinha** acima da bandeja, apontando para o ícone do monitor (janela própria em Tkinter, sem borda, sempre no topo, sem pegar foco): "Monitor de senhas sem funcionar há 3 min — <motivo>. Tentando recuperar..." (fica até clicar ou voltar) e "Monitor de senhas voltou a funcionar" (some em ~12 s). No máximo 1 aviso a cada `alerta_falha_repetir_min` (10) enquanto durar. Uma mensagem por vez, nunca por cima da janela vermelha do alarme; clique abre o painel. Os avisos que iam para a notificação do Windows também usam o balão.
+- **Voz opcional** "Atenção: o monitor de senhas parou de funcionar" (`alerta_falha_voz`, padrão `true`), respeitando o `alerta_voz` geral e nunca por cima de um alarme de senha.
+- **Supervisor avisa:** ao matar/relançar o monitor ou quando ele cai, e "Monitor de senhas não conseguiu voltar — avise o suporte" quando 2 relançamentos seguidos não resolvem.
+- **Erros não tratados** (exceção que derruba uma thread, a thread principal ou um callback do Tk) vão para o log com o traceback (sem token, senha, e-mail, CPF ou telefone) e disparam o balão de erro.
+- Estado do alerta passa pelos reinícios da escada (`logs\alerta_falha.json`). Chaves novas no `filtros.json` com migração aditiva: `alerta_falha_min`, `alerta_falha_repetir_min`, `alerta_falha_notificar`, `alerta_falha_voz`.
+- Testes novos (`tests/test_alerta_falha.py`): desenho e posição do balão, uma mensagem por vez, some em 12 s, alarme por cima, clique/X, entrar/repetir/voltar, reinício no meio da falha, fora do horário, sem internet, chaves desligadas, voz, erros não tratados sem dado sensível e o supervisor (avisos, suporte após 3 falhas, versão do script).
+- Publicada só como `.py` (sem `.exe`), com o ZIP `MonitorSenhas-2.3.5-python.zip` na release.
+
 ### v2.3.4 — sessão guardada: reinício sem login
 
 - **A sessão do modo requisição fica guardada** em `%LOCALAPPDATA%\MonitorFeegow\sessao.dat`, cifrada com a DPAPI do Windows (só o usuário atual daquele PC abre), com a validade (`exp` do JWT). A API só precisa do `x-access-token` (nenhum cookie), então só o token é guardado. Nunca vai para o log, para a pasta do programa nem para o repositório.

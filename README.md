@@ -60,7 +60,7 @@ O script abre o Feegow num Chrome controlado pelo Selenium, entra na **Lista de 
 | ⚡ | **Padrões prontos** | Um clique troca o filtro: 🩺 Dilatação, 👓 Lentes, 🔔 MC, 🎫 R2. O filtro anterior vai para `filtros.backup.json`. |
 | 🤫 | **CIENTE silencia** | Ao clicar em CIENTE, os alertas param por `pausa_minutos` (padrão 15). Se a senha sair da fila, o alarme se desarma sozinho. |
 | 👻 | **Chrome escondido** | O navegador roda fora da tela e o programa vive no **ícone da bandeja**, cuja cor mostra o estado (🟢 🟠 ⚪ 🔴). |
-| 🛡️ | **Auto-recuperação** | Um watchdog refaz o login, recarrega a página, reabre o Chrome ou reinicia o programa quando algo trava. Um supervisor relança o monitor se ele cair. |
+| 🛡️ | **Auto-recuperação** | Um watchdog refaz o login, recarrega a página, reabre o Chrome ou reinicia o programa quando algo trava. Um supervisor relança o monitor se ele cair. Parou ou deu erro? Ícone vermelho, **balão com setinha acima da bandeja** e voz avisam (2.3.5). |
 | 🔄 | **Atualização automática** | Consulta o `versao.json` assinado (Ed25519) deste repositório, instala num momento seguro e volta para a versão anterior se a nova falhar. |
 | 🔐 | **Senha protegida** | A senha do Feegow fica cifrada pelo Windows (DPAPI) e o e-mail aparece mascarado no log. |
 | 🧩 | **Instalação simples** | Um ZIP com tudo na [release](https://github.com/Nicker2/script-monitoramento/releases/latest): Python 3.12, extrair, duplo clique. As bibliotecas e o ChromeDriver certo são instalados sozinhos. (O `.exe` foi descontinuado.) |
@@ -218,6 +218,10 @@ O **💾 Salvar** grava em `filtros.json` e `credenciais.json`, e vale na hora. 
 | `auto_atualizar` | `true` | Liga/desliga a atualização automática. |
 | `max_relogins_por_hora` | `3` | Passou disso, para de relogar por 60 min (outro PC com o mesmo usuário?). |
 | `reiniciar_a_cada_min` | `60` | Reinicia o programa sozinho a cada N minutos (adia durante alerta ou pausa do CIENTE). `0` desliga. |
+| `alerta_falha_min` | `3` | Sem ciclo OK há N minutos = ícone vermelho, balão acima da bandeja e voz (2.3.5). `0` desliga. |
+| `alerta_falha_repetir_min` | `10` | Enquanto durar a falha, repete o aviso no máximo a cada N minutos. |
+| `alerta_falha_notificar` | `true` | Balões do monitor e do supervisor (falha, voltou, erro inesperado, relançamento). |
+| `alerta_falha_voz` | `true` | Fala "Atenção: o monitor de senhas parou de funcionar" (só com `alerta_voz` ligado e nunca por cima de um alarme de senha). |
 
 As opções de watchdog, Chrome (RAM, reinício diário, imagens), atualização e heartbeat remoto estão explicadas em [docs/AVANCADO.md](docs/AVANCADO.md).
 
@@ -240,7 +244,7 @@ Criado na primeira execução a partir do [`credenciais.exemplo.json`](credencia
 **Topo do painel:**
 
 ```
-● Conectado | último OK há 8s | v2.3.4
+● Conectado | último OK há 8s | v2.3.5
 ```
 
 **Linhas do `logs/monitor.log`** (um `🔎` por ticket do modal; as listas aparecem normalizadas, sem acento nem hífen):

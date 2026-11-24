@@ -11,6 +11,10 @@ Duplo clique (roda com pythonw.exe, sem janela de console). Ele:
     "ativo" sem nenhum ciclo OK há mais de 30 min (e sem alarme tocando) = relança;
   * sem teto de relançamentos forçados por hora (2.3.3): só um intervalo mínimo de
     30 s entre um e o próximo, para não virar laço apertado;
+  * avisa o usuário num balão acima da bandeja (2.3.5) quando precisa matar/relançar
+    o monitor e quando ele não volta depois de 2 relançamentos seguidos ("avise o
+    suporte"); no máximo 1 aviso igual a cada 10 min; alerta_falha_notificar=false
+    no filtros.json desliga;
   * grava tudo em logs/supervisor.log (com rotação) e não roda duas vezes.
 
 A atualização pelo GitHub, o watchdog do navegador e o log do monitor ficam
@@ -21,6 +25,7 @@ import ctypes
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -32,6 +37,7 @@ PASTA_LOGS = os.path.join(PASTA, "logs")
 LOG = os.path.join(PASTA_LOGS, "supervisor.log")
 
 HEARTBEAT = os.path.join(PASTA_LOGS, "heartbeat.json")
+FILTROS = os.path.join(PASTA, "filtros.json")
 
 CODIGO_REINICIAR = 75
 CODIGO_OUTRA_INSTANCIA = 3
@@ -44,6 +50,11 @@ LIMITE_SEM_OK = int(os.environ.get("MONITOR_SUP_LIMITE_SEM_OK") or 1800)   # s a
 INTERVALO_MINIMO_MORTES = int(os.environ.get("MONITOR_SUP_INTERVALO_MINIMO") or 30)   # s entre relançamentos forçados
 FOLGA_INICIALIZACAO = int(os.environ.get("MONITOR_SUP_FOLGA") or 300)   # s após abrir/voltar da suspensão
 INTERVALO_CONFERENCIA = int(os.environ.get("MONITOR_SUP_INTERVALO") or 30)   # s entre conferências
+ESPERA_BASE = int(os.environ.get("MONITOR_SUP_ESPERA_BASE") or 5)   # 1ª espera depois de uma queda
+REPETIR_AVISO = 600            # s: o mesmo aviso no máximo 1 vez a cada 10 min
+FALHAS_PARA_SUPORTE = 3        # 1ª falha + 2 relançamentos sem voltar = "avise o suporte"
+_AVISOS = {}                   # chave do aviso -> quando saiu
+_FALHAS = {"seguidas": 0, "suporte": False}   # quedas/mortes seguidas sem um ciclo OK no meio
 _MUTEX = None
 _ULTIMA_MORTE = {"ts": 0.0}   # último relançamento forçado (heartbeat parado / sem ciclo OK)
 
@@ -64,6 +75,89 @@ def log(mensagem):
             sys.stdout.flush()
     except Exception:
         pass
+
+
+def _avisos_ligados():
+    try:
+        with open(FILTROS, "r", encoding="utf-8") as arquivo:
+            return json.load(arquivo).get("alerta_falha_notificar", True) is not False
+    except Exception:
+        return True
+
+
+def _script_tem_balao():
+    """Só o SCRIPT_EXPLICA.py 2.3.5+ entende --balao (um antigo abriria um monitor)."""
+    try:
+        with open(SCRIPT, "r", encoding="utf-8", errors="replace") as arquivo:
+            achado = re.search(r'^VERSAO = "(\d+)\.(\d+)\.(\d+)"', arquivo.read(8000), re.M)
+        return bool(achado) and tuple(map(int, achado.groups())) >= (2, 3, 5)
+    except Exception:
+        return False
+
+
+def mostrar_balao(tipo, titulo, texto, persistente=False):
+    """Balão acima da bandeja desenhado pelo próprio SCRIPT_EXPLICA.py (--balao), num
+    processo à parte que fecha sozinho. Não espera e nunca derruba o supervisor."""
+    if os.environ.get("MONITOR_SUP_SEM_BALAO") == "1" or not _script_tem_balao():
+        return False
+    pasta_py = os.path.dirname(sys.executable)
+    interpretador = os.path.join(pasta_py, "pythonw.exe")
+    if not os.path.isfile(interpretador):
+        interpretador = sys.executable
+    comando = [interpretador, SCRIPT, "--balao", tipo, titulo, texto] + (["--persistente"] if persistente else [])
+    try:
+        subprocess.Popen(comando, cwd=PASTA, creationflags=0x08000000)
+        return True
+    except Exception as e:
+        log(f"Não consegui mostrar o balão: {e}")
+        return False
+
+
+def avisar(chave, tipo, titulo, texto, persistente=False, agora=None):
+    """Loga e mostra o balão, no máximo 1 vez a cada REPETIR_AVISO por chave."""
+    agora = agora or time.time()
+    if agora - _AVISOS.get(chave, -1e12) < REPETIR_AVISO:
+        return False
+    _AVISOS[chave] = agora
+    log(f"Aviso ao usuário: {titulo} — {texto}")
+    if not _avisos_ligados():
+        return False
+    mostrar_balao(tipo, titulo, texto, persistente)
+    return True
+
+
+def registrar_falha(descricao, agora=None):
+    """Queda ou morte forçada do monitor: avisa; na 3ª seguida sem voltar, pede suporte."""
+    _FALHAS["seguidas"] += 1
+    if _FALHAS["seguidas"] >= FALHAS_PARA_SUPORTE:
+        log("Monitor de senhas não conseguiu voltar — avise o suporte "
+            f"({_FALHAS['seguidas']} falhas seguidas, a última: {descricao}).")
+        _FALHAS["suporte"] = True
+        return avisar("nao_voltou", "erro", "Monitor de senhas não conseguiu voltar",
+                      "Avise o suporte. O supervisor continua tentando reabrir o monitor.",
+                      persistente=True, agora=agora)
+    return avisar("relancou", "aviso", "Monitor de senhas reiniciado",
+                  f"{descricao} O supervisor está reabrindo o monitor.", agora=agora)
+
+
+def registrar_volta(agora=None):
+    """O monitor relançado chegou a um ciclo OK: zera a contagem (e avisa se tinha pedido suporte)."""
+    if _FALHAS["suporte"]:
+        avisar("voltou", "ok", "Monitor de senhas voltou a funcionar",
+               "Depois de vários relançamentos, o monitor voltou a funcionar.", agora=agora)
+    if _FALHAS["seguidas"]:
+        log(f"O monitor voltou a funcionar depois de {_FALHAS['seguidas']} falha(s) seguida(s).")
+    _FALHAS.update(seguidas=0, suporte=False)
+
+
+def voltou_a_funcionar(pid, inicio):
+    """True quando o heartbeat DESTE processo mostra um ciclo OK depois de `inicio`."""
+    try:
+        with open(HEARTBEAT, "r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+        return int(dados.get("pid") or 0) == int(pid) and float(dados.get("ultimo_ok_ts") or 0) > inicio
+    except Exception:
+        return False
 
 
 def instancia_unica():
@@ -158,6 +252,8 @@ def esperar_monitor(processo, inicio):
         except subprocess.TimeoutExpired:
             pass
         agora = time.time()
+        if _FALHAS["seguidas"] and voltou_a_funcionar(processo.pid, inicio):
+            registrar_volta(agora)
         if agora - ultima_volta > INTERVALO_CONFERENCIA * 4:
             # o relógio pulou: PC suspenso/hibernado. Dá a folga de novo.
             folga_ate = agora + FOLGA_INICIALIZACAO
@@ -171,6 +267,8 @@ def esperar_monitor(processo, inicio):
                       f"{LIMITE_SEM_OK // 60} min — a recuperação interna não resolveu.")
         if motivo and pode_forcar_reinicio(agora):
             log(motivo + " Encerrando o processo e relançando.")
+            registrar_falha("Ele parou de responder" if "heartbeat" in motivo
+                            else "Ele ficou muito tempo sem conseguir monitorar.", agora)
             matar_arvore(processo.pid)
             try:
                 processo.wait(timeout=30)
@@ -219,8 +317,10 @@ def main():
             continue
 
         quedas_rapidas = quedas_rapidas + 1 if duracao < 120 else 0
-        espera = min(5 * (2 ** max(0, quedas_rapidas - 1)), ESPERA_MAXIMA)
+        espera = min(ESPERA_BASE * (2 ** max(0, quedas_rapidas - 1)), ESPERA_MAXIMA)
         log(f"O monitor caiu (código {codigo}, rodou {int(duracao)}s). Relançando em {espera}s.")
+        if codigo != CODIGO_MORTO_POR_HEARTBEAT:
+            registrar_falha(f"Ele fechou sozinho (código {codigo}).")
         time.sleep(espera)
 
 

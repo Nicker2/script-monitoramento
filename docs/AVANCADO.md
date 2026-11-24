@@ -137,6 +137,34 @@ Configuração no `filtros.json` (ou na aba **Sistema**):
 
 ---
 
+## Alerta de falha (2.3.5)
+
+Quando o monitor para de funcionar, o usuário fica sabendo sem precisar olhar o log:
+
+| Situação | O que aparece |
+|---|---|
+| Monitorando OK | Ícone **verde**. |
+| Recuperando / relogando | Ícone **amarelo** (como antes). |
+| **Sem nenhum ciclo OK há `alerta_falha_min` (3) min** (Chrome/API sem resposta, login travado, sem internet, login recusado, monitoramento parado sozinho) | Ícone **vermelho** com o motivo no tooltip (`⚠️ Sem funcionar há 3 min: <motivo>`); **balão** "Monitor de senhas sem funcionar há 3 min — <motivo>. Tentando recuperar..." (fica até clicar ou até voltar); **voz** "Atenção: o monitor de senhas parou de funcionar" (`alerta_falha_voz`, só com `alerta_voz` ligado e nunca por cima de um alarme de senha). No log: `⚠️ Monitor de senhas sem funcionar há N min: ...`. |
+| A falha continua | Repete balão e voz **no máximo a cada `alerta_falha_repetir_min` (10) min**. |
+| Voltou (primeiro ciclo OK) | Balão ✅ "Monitor de senhas voltou a funcionar" (some em ~12 s) e ícone verde. |
+| Erro não tratado (exceção que derruba uma thread, na thread principal ou num callback do Tk) | Traceback no `logs\monitor.log` (token/JWT, senha, e-mail, CPF e telefone trocados por `[REDACTED]`/`***`) e balão ❌ "Erro inesperado no monitor de senhas" (no máximo 1 a cada 10 min). |
+
+Fora do horário de funcionamento ou com o monitor parado pelo usuário não há alerta. A escada de recuperação reinicia o programa justamente nessa hora, então o estado do alerta passa de um processo para o outro (`logs\alerta_falha.json`): o balão volta depois do reinício (sem repetir a voz) e o "sem ciclo OK" continua contando do último OK do processo anterior.
+
+**O balão:** janela própria (Tkinter + desenho do Pillow), sem borda, sempre no topo e **sem pegar foco** (`WS_EX_NOACTIVATE`, `WS_EX_TOOLWINDOW`), no estilo do balão clássico do Windows: cantos arredondados, ícone (⚠️ ✅ ❌ ℹ️), título, texto, botão **X** e a **setinha** para baixo apontando para o ícone do monitor (posição pela `Shell_NotifyIconGetRect` do próprio ícone e pela área de trabalho `SPI_GETWORKAREA`; com o ícone escondido no menu ^ ou a barra em outro lado, vai para o canto inferior direito). Uma mensagem por vez (a nova substitui a atual); some sozinho em ~12 s, menos o de falha; clique abre o painel, o **X** só fecha; nunca fica por cima da janela vermelha do alarme (some enquanto ela estiver aberta e volta depois). Os outros avisos que antes iam para a notificação do Windows (API mudou de formato, sessão derrubada, falhas repetidas) também saem no balão.
+
+**Supervisor (`iniciar_monitor.pyw`):** avisa num balão quando precisa matar e relançar o monitor (travado ou sem ciclo OK há 30 min) ou quando ele cai sozinho ("Monitor de senhas reiniciado"), e quando o monitor **não volta depois de 2 relançamentos seguidos** (3ª falha sem nenhum ciclo OK no meio): "Monitor de senhas não conseguiu voltar — avise o suporte" (fica até clicar; clique abre a pasta `logs`). Quando o monitor relançado chega a um ciclo OK, a contagem zera (e, se tinha pedido suporte, avisa que voltou). Mesmo aviso no máximo a cada 10 min. O balão do supervisor é desenhado pelo próprio `SCRIPT_EXPLICA.py` (`--balao`, processo à parte que fecha sozinho; só com o script 2.3.5 ou mais novo). O heartbeat ganhou `ultimo_ok_ts` para isso.
+
+| Chave | Padrão | O que faz |
+|---|---|---|
+| `alerta_falha_min` | `3` | Minutos sem ciclo OK para entrar em falha (0 a 120; `0` desliga o alerta). |
+| `alerta_falha_repetir_min` | `10` | Repetição máxima do aviso enquanto durar a falha. |
+| `alerta_falha_notificar` | `true` | Balões (monitor e supervisor). `false` = só ícone, log e voz. |
+| `alerta_falha_voz` | `true` | Voz do alerta de falha (também precisa de `alerta_voz`). |
+
+As quatro chaves são **acrescentadas** ao `filtros.json` de cada PC na primeira leitura pela 2.3.5 (nada existente é trocado; log `🚨 filtros.json: alerta de falha adicionado`).
+
 ## Atualização automática
 
 O programa consulta `https://raw.githubusercontent.com/Nicker2/script-monitoramento/<canal>/versao.json` a cada **60 min** (primeira consulta 90 s depois de abrir). Se a versão de lá for maior que a instalada:

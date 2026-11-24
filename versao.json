@@ -1,18 +1,18 @@
 {
-  "versao": "2.3.4",
+  "versao": "2.3.5",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "115c9be9493bc43998a1e92b9ea8423a56eb99ea5b5a40834f8b19498f0ec4c5",
-  "tamanho": 270983,
+  "sha256": "b9f90ea18c82b73b4f5ec6e74da8cf4cbc0270a77b16e3cd6f304d0bad504448",
+  "tamanho": 300217,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
-      "sha256": "94597c56c38501aaea489bbfcfe45fad4548867f6510331697af47e4955ef86c",
-      "tamanho": 9431
+      "sha256": "aa7c2991bc4c112532f1c79d8988cdfa5eb7fc088ae7df6e6751e19079a5d598",
+      "tamanho": 14254
     }
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "Sessao guardada: o token do modo requisicao fica em %LOCALAPPDATA%\\MonitorFeegow\\sessao.dat cifrado com DPAPI; ao abrir/reiniciar, sessao valida e reaproveitada sem abrir o Chrome nem logar; invalida ou corrompida e apagada e o login normal grava a nova.",
+  "notas": "Alerta de falha: icone vermelho, balao com setinha acima da bandeja e voz quando o monitor fica sem ciclo OK ha 3 min (ou da erro); aviso de volta; supervisor avisa relancamentos e pede suporte se nao voltar.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "dXlIRAR/N20+6DRNe8NAi9PfuqvIgsYahgq1ZzYoHbqahFjUGtlL3XJ6Z5EIRJqhuNo+yopJkBZJc+E3PVxpCw=="
+  "assinatura": "0A+xMpk66HEA36btGRPURQJa64JvktdgIElblvX5u4SQ85TcSmi04rt/22nDlUWNHTc8qF6CUZCwzlIw1q7dBg=="
 }

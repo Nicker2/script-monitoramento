@@ -56,7 +56,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.3.4"
+VERSAO = "2.3.5"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -475,6 +475,359 @@ def _checar_atualizacao_em_teste():
     _gravar_estado_atualizacao(estado)
 
 
+# ==============================================================================
+# 💬 BALÃO DE AVISO (2.3.5): balão clássico do Windows, com a SETINHA apontando
+# para o ícone do monitor na bandeja. Janela própria do Tkinter (sem borda, sempre
+# no topo, sem pegar foco), desenhada com o Pillow (o mesmo desenho vira a prévia).
+# Também roda sozinho (`SCRIPT_EXPLICA.py --balao <tipo> <título> <texto>`), para o
+# supervisor avisar quando o monitor não está de pé.
+# ==============================================================================
+BALAO_LARGURA = 400
+BALAO_SETA_ALTURA = 14
+BALAO_SETA_LARGURA = 22
+BALAO_RAIO = 10
+BALAO_SEGUNDOS = 12                 # some sozinho (os persistentes ficam até clicar)
+BALAO_MAX_PERSISTENTE = 30 * 60     # rede de segurança do balão avulso
+BALAO_COR_CHAVE = (255, 0, 254)     # cor "transparente" da janela (nunca entra no desenho)
+_BALAO_CORES_ICONE = {"aviso": "#f59e0b", "ok": "#16a34a", "erro": "#dc2626", "info": "#2563eb"}
+
+
+def _fonte_balao(negrito, tamanho):
+    from PIL import ImageFont
+    pasta = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    for nome in (("segoeuib.ttf", "arialbd.ttf") if negrito else ("segoeui.ttf", "arial.ttf")):
+        try:
+            return ImageFont.truetype(os.path.join(pasta, nome), tamanho)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(tamanho)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _quebrar_linhas(texto, fonte, largura, maximo=8):
+    linhas = []
+    for paragrafo in str(texto or "").split("\n"):
+        atual = ""
+        for palavra in paragrafo.split():
+            teste = f"{atual} {palavra}".strip()
+            if not atual or fonte.getlength(teste) <= largura:
+                atual = teste
+            else:
+                linhas.append(atual)
+                atual = palavra
+        linhas.append(atual)
+    while linhas and not linhas[-1]:
+        linhas.pop()
+    if len(linhas) > maximo:
+        linhas = linhas[:maximo]
+        linhas[-1] = linhas[-1].rstrip(".") + "..."
+    return linhas
+
+
+def _desenhar_icone_balao(tipo, lado):
+    """Ícone do balão (RGBA, lado x lado): triângulo ⚠️, círculo ✓, ✕ ou i."""
+    from PIL import Image, ImageDraw
+    s = 4
+    n = lado * s
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    cor = _BALAO_CORES_ICONE.get(tipo, _BALAO_CORES_ICONE["info"])
+    branco = (255, 255, 255, 255)
+    if tipo == "aviso":
+        d.polygon([(n * 0.5, n * 0.06), (n * 0.97, n * 0.92), (n * 0.03, n * 0.92)], fill=cor)
+        d.rounded_rectangle([n * 0.455, n * 0.34, n * 0.545, n * 0.66], radius=n * 0.04, fill=branco)
+        d.ellipse([n * 0.445, n * 0.72, n * 0.555, n * 0.83], fill=branco)
+    else:
+        d.ellipse([n * 0.03, n * 0.03, n * 0.97, n * 0.97], fill=cor)
+        traco = int(n * 0.1)
+        if tipo == "ok":
+            d.line([(n * 0.28, n * 0.52), (n * 0.44, n * 0.68), (n * 0.74, n * 0.36)], fill=branco,
+                   width=traco, joint="curve")
+        elif tipo == "erro":
+            d.line([(n * 0.33, n * 0.33), (n * 0.67, n * 0.67)], fill=branco, width=traco)
+            d.line([(n * 0.67, n * 0.33), (n * 0.33, n * 0.67)], fill=branco, width=traco)
+        else:
+            d.ellipse([n * 0.44, n * 0.22, n * 0.56, n * 0.34], fill=branco)
+            d.rounded_rectangle([n * 0.45, n * 0.42, n * 0.55, n * 0.78], radius=n * 0.03, fill=branco)
+    return img.resize((lado, lado), Image.LANCZOS)
+
+
+def desenhar_balao(tipo, titulo, texto, seta_x=None, largura=BALAO_LARGURA):
+    """(imagem RGB, geometria). Fora do balão = BALAO_COR_CHAVE (vira transparente).
+    geometria: fechar (x0, y0, x1, y1), seta_x, altura_corpo, largura, altura."""
+    from PIL import Image, ImageDraw
+    margem, lado_icone, vao, area_x = 14, 32, 12, 18
+    fonte_titulo, fonte_texto = _fonte_balao(True, 15), _fonte_balao(False, 13)
+    x_texto = margem + lado_icone + vao
+    linhas_titulo = _quebrar_linhas(titulo, fonte_titulo, largura - x_texto - margem - area_x, 2)
+    linhas_texto = _quebrar_linhas(texto, fonte_texto, largura - x_texto - margem, 8)
+    passo_titulo, passo_texto = 21, 18
+    altura_textos = len(linhas_titulo) * passo_titulo + (4 + len(linhas_texto) * passo_texto if linhas_texto else 0)
+    corpo = max(margem * 2 + lado_icone, margem * 2 + altura_textos)
+    altura = corpo + BALAO_SETA_ALTURA
+    meia = BALAO_SETA_LARGURA / 2
+    minimo, maximo = BALAO_RAIO + meia + 2, largura - BALAO_RAIO - meia - 2
+    seta = float(largura - 40 if seta_x is None else seta_x)
+    seta = max(minimo, min(maximo, seta))
+
+    s = 3   # supersample: borda suave
+
+    def mascara(recuo):
+        m = Image.new("L", (largura * s, altura * s), 0)
+        d = ImageDraw.Draw(m)
+        r = recuo * s
+        d.rounded_rectangle([r, r, largura * s - 1 - r, corpo * s - 1 - r], radius=(BALAO_RAIO - recuo) * s, fill=255)
+        d.polygon([((seta - meia + recuo * 1.4) * s, (corpo - 1 - recuo) * s - 2 * s),
+                   ((seta + meia - recuo * 1.4) * s, (corpo - 1 - recuo) * s - 2 * s),
+                   (seta * s, (altura - 1 - recuo * 1.6) * s)], fill=255)
+        return m.resize((largura, altura), Image.LANCZOS)
+
+    externa, interna = mascara(0), mascara(1)
+    fundo = Image.new("RGB", (largura, altura), (255, 255, 255))
+    dg = ImageDraw.Draw(fundo)
+    for y in range(altura):   # degradê leve, como o balão do Windows 7
+        t = min(1.0, y / max(1, corpo))
+        c = int(255 - 12 * t)
+        dg.line([(0, y), (largura, y)], fill=(c, c, min(255, c + 2)))
+    borda = Image.new("RGB", (largura, altura), (118, 124, 134))
+    chave = Image.new("RGB", (largura, altura), BALAO_COR_CHAVE)
+    preenchido = Image.composite(fundo, borda, interna)
+    img = Image.composite(preenchido, chave, externa.point(lambda v: 255 if v >= 110 else 0))
+
+    icone = _desenhar_icone_balao(tipo, lado_icone)
+    img.paste(icone, (margem, margem), icone)
+    d = ImageDraw.Draw(img)
+    y = margem - 2
+    for linha in linhas_titulo:
+        d.text((x_texto, y), linha, font=fonte_titulo, fill=(17, 24, 39))
+        y += passo_titulo
+    y += 4
+    for linha in linhas_texto:
+        d.text((x_texto, y), linha, font=fonte_texto, fill=(55, 65, 81))
+        y += passo_texto
+    x1, y0 = largura - margem + 2, margem - 3
+    fechar = (x1 - 10, y0, x1, y0 + 10)
+    d.line([fechar[:2], fechar[2:]], fill=(107, 114, 128), width=2)
+    d.line([(fechar[0], fechar[3]), (fechar[2], fechar[1])], fill=(107, 114, 128), width=2)
+    return img, {"fechar": fechar, "seta_x": int(round(seta)), "altura_corpo": corpo,
+                 "largura": largura, "altura": altura}
+
+
+def area_de_trabalho():
+    """(esquerda, topo, direita, base) da área de trabalho (sem a barra de tarefas)."""
+    try:
+        from ctypes import wintypes
+        rect = wintypes.RECT()
+        if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):   # SPI_GETWORKAREA
+            return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:
+        pass
+    return None
+
+
+def retangulo_icone_bandeja(icone):
+    """Retângulo do PRÓPRIO ícone do monitor na bandeja (Shell_NotifyIconGetRect).
+    None se não der (ícone escondido no menu ^, pystray diferente, outro SO)."""
+    hwnd = getattr(icone, "_hwnd", None)
+    if not hwnd or os.name != "nt":
+        return None
+    try:
+        from ctypes import wintypes
+
+        class _Ident(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("hWnd", wintypes.HWND), ("uID", wintypes.UINT),
+                        ("guidItem", ctypes.c_byte * 16)]
+        ident = _Ident()
+        ident.cbSize = ctypes.sizeof(_Ident)
+        ident.hWnd = hwnd
+        ident.uID = id(icone) & 0xFFFFFFFF   # o pystray registra o ícone com hID=id(self)
+        rect = wintypes.RECT()
+        if ctypes.windll.shell32.Shell_NotifyIconGetRect(ctypes.byref(ident), ctypes.byref(rect)) != 0:
+            return None
+        return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:
+        return None
+
+
+def posicao_balao(area, icone, largura, altura):
+    """(x, y, seta_x): ponta da setinha encostada na barra de tarefas, apontando para
+    o ícone quando ele está visível na barra de baixo; senão, canto inferior direito."""
+    esquerda, _topo, direita, base = area
+    if icone and icone[1] >= base - 2 and icone[2] > icone[0]:
+        centro = (icone[0] + icone[2]) // 2
+        x = max(esquerda + 4, min(direita - largura - 4, centro - (largura - 40)))
+        return x, base - altura, centro - x
+    return direita - largura - 12, base - altura, largura - 40
+
+
+class GerenciadorBalao:
+    """Uma mensagem por vez (a nova substitui a atual). Nunca por cima da janela
+    vermelha do alarme: esconde enquanto `alarme()` for True e volta depois.
+    `tick()` roda na thread do Tk (a cada 500 ms); `avisar()` vale de qualquer thread."""
+
+    def __init__(self, mostrar, esconder, alarme=lambda: False, segundos=BALAO_SEGUNDOS):
+        self._mostrar, self._esconder, self._alarme = mostrar, esconder, alarme
+        self.segundos = segundos
+        self.atual = None
+        self.visivel = False
+        self._trava = threading.Lock()
+
+    def avisar(self, tipo, titulo, texto, persistente=False, chave="", ao_clicar=None):
+        with self._trava:
+            self.atual = {"tipo": tipo, "titulo": titulo, "texto": texto, "persistente": persistente,
+                          "chave": chave, "ao_clicar": ao_clicar, "expira": 0.0, "novo": True}
+
+    def descartar(self, chave):
+        with self._trava:
+            if self.atual is not None and chave and self.atual["chave"] == chave:
+                self.atual = None
+
+    def fechar(self):
+        with self._trava:
+            self.atual = None
+
+    def clicou(self, no_fechar=False):
+        with self._trava:
+            msg, self.atual = self.atual, None
+        if msg and not no_fechar and msg.get("ao_clicar"):
+            try:
+                msg["ao_clicar"]()
+            except Exception:
+                pass
+
+    def tick(self, agora=None):
+        agora = agora or time.time()
+        with self._trava:
+            msg = self.atual
+            if msg is not None and msg["expira"] and agora >= msg["expira"]:
+                self.atual = msg = None
+        if msg is None:
+            if self.visivel:
+                self.visivel = False
+                self._esconder()
+            return
+        if self._alarme():
+            if self.visivel:
+                self.visivel = False
+                self._esconder()
+            return
+        if msg["novo"] or not self.visivel:
+            msg["novo"] = False
+            if not msg["persistente"] and not msg["expira"]:
+                msg["expira"] = agora + self.segundos
+            self.visivel = True
+            self._mostrar(msg)
+
+
+class JanelaBalao:
+    """A janela do balão: Toplevel sem borda, sempre no topo, que não pega foco
+    (WS_EX_NOACTIVATE) e não aparece na barra de tarefas (WS_EX_TOOLWINDOW)."""
+
+    def __init__(self, mestre, icone_bandeja=lambda: None):
+        self.mestre = mestre
+        self.icone_bandeja = icone_bandeja
+        self.gerenciador = None
+        self.janela = None
+        self.rotulo = None
+        self.foto = None
+        self.geometria = None
+
+    def _criar(self):
+        janela = tk.Toplevel(self.mestre)
+        janela.withdraw()
+        janela.overrideredirect(True)
+        janela.attributes("-topmost", True)
+        cor = "#%02x%02x%02x" % BALAO_COR_CHAVE
+        janela.configure(bg=cor)
+        try:
+            janela.attributes("-transparentcolor", cor)
+        except Exception:
+            pass
+        rotulo = tk.Label(janela, bd=0, highlightthickness=0, bg=cor, cursor="hand2")
+        rotulo.pack()
+        rotulo.bind("<Button-1>", self._clique)
+        janela.update_idletasks()
+        try:
+            hwnd = ctypes.windll.user32.GetParent(janela.winfo_id())
+            estilo = ctypes.windll.user32.GetWindowLongW(hwnd, -20)   # GWL_EXSTYLE
+            ctypes.windll.user32.SetWindowLongW(hwnd, -20, estilo | 0x08000000 | 0x00000080)
+        except Exception:
+            pass
+        self.janela, self.rotulo = janela, rotulo
+
+    def mostrar(self, msg):
+        from PIL import ImageTk
+        if self.janela is None:
+            self._criar()
+        area = area_de_trabalho() or (0, 0, self.mestre.winfo_screenwidth(), self.mestre.winfo_screenheight() - 48)
+        img, geo = desenhar_balao(msg["tipo"], msg["titulo"], msg["texto"])
+        x, y, seta = posicao_balao(area, retangulo_icone_bandeja(self.icone_bandeja()), geo["largura"], geo["altura"])
+        img, geo = desenhar_balao(msg["tipo"], msg["titulo"], msg["texto"], seta_x=seta)
+        self.foto = ImageTk.PhotoImage(img, master=self.mestre)
+        self.rotulo.configure(image=self.foto)
+        self.geometria = geo
+        self.janela.geometry(f"{geo['largura']}x{geo['altura']}+{x}+{y}")
+        try:
+            hwnd = ctypes.windll.user32.GetParent(self.janela.winfo_id())
+            self.janela.deiconify()
+            # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW, HWND_TOPMOST
+            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
+        except Exception:
+            self.janela.deiconify()
+
+    def esconder(self):
+        if self.janela is not None:
+            try:
+                self.janela.withdraw()
+            except Exception:
+                pass
+
+    def _clique(self, evento):
+        geo = self.geometria or {}
+        x0, y0, x1, y1 = geo.get("fechar") or (0, 0, -1, -1)
+        no_fechar = x0 - 6 <= evento.x <= x1 + 6 and y0 - 6 <= evento.y <= y1 + 6
+        if self.gerenciador is not None:
+            self.gerenciador.clicou(no_fechar=no_fechar)
+
+
+def rodar_balao_avulso(argv):
+    """`--balao <tipo> <título> <texto> [--persistente]`: mostra um balão e sai.
+    O supervisor usa quando o monitor não está de pé. Clique abre a pasta logs."""
+    try:
+        resto = argv[argv.index("--balao") + 1:]
+        persistente = "--persistente" in resto
+        resto = [a for a in resto if a != "--persistente"]
+        padrao = ["info", "Monitor de senhas", ""]
+        tipo, titulo, texto = resto[:3] + padrao[len(resto[:3]):]
+        raiz = tk.Tk()
+        raiz.withdraw()
+        janela = JanelaBalao(raiz)
+        gerenciador = GerenciadorBalao(janela.mostrar, janela.esconder)
+        janela.gerenciador = gerenciador
+        pasta_logs = os.path.join(_pasta_do_programa(), "logs")
+        gerenciador.avisar(tipo, titulo, texto, persistente=persistente,
+                           ao_clicar=lambda: os.startfile(pasta_logs) if os.path.isdir(pasta_logs) else None)
+        inicio = time.time()
+
+        def girar():
+            gerenciador.tick()
+            if gerenciador.atual is None or time.time() - inicio > BALAO_MAX_PERSISTENTE:
+                raiz.after(300, raiz.destroy)
+                return
+            raiz.after(500, girar)
+        raiz.after(50, girar)
+        raiz.mainloop()
+        return 0
+    except Exception:
+        return 1
+
+
+if __name__ == "__main__" and "--balao" in sys.argv:
+    sys.exit(rodar_balao_avulso(sys.argv))
+
+
 if __name__ == "__main__":
     _checar_atualizacao_em_teste()
     if not garantir_instancia_unica():
@@ -710,6 +1063,14 @@ FILTROS_PADRAO = {
     # loga cada requisição do modo requisição (→ GET / ← resposta e, quando muda, o corpo
     # com dados de paciente mascarados). O token nunca vai para o log.
     "log_requisicoes": True,
+    # alerta de falha (2.3.5): sem ciclo OK há alerta_falha_min minutos (0 = desliga) =
+    # ícone vermelho, balão acima da bandeja e voz (alerta_falha_voz, respeita alerta_voz);
+    # repete no máximo a cada alerta_falha_repetir_min. alerta_falha_notificar = balões
+    # do monitor e do supervisor (falha, voltou, erro inesperado, relançamento).
+    "alerta_falha_min": 3,
+    "alerta_falha_repetir_min": 10,
+    "alerta_falha_notificar": True,
+    "alerta_falha_voz": True,
     # navegador
     "ciclo_leve": True,                     # clique + leitura do modal num único JavaScript
     "chrome_reinicio_diario_hora": "03:00", # reabre o Chrome 1x por dia nesse horário ("" = não)
@@ -1024,6 +1385,20 @@ def migrar_modo_requisicao(dados):
     return mudou
 
 
+CHAVES_ALERTA_FALHA = ("alerta_falha_min", "alerta_falha_repetir_min", "alerta_falha_notificar",
+                       "alerta_falha_voz")
+
+
+def migrar_alerta_falha(dados):
+    """2.3.5: só ACRESCENTA as chaves do alerta de falha que faltam. True = mudou."""
+    mudou = False
+    for chave in CHAVES_ALERTA_FALHA:
+        if chave not in dados:
+            dados[chave] = FILTROS_PADRAO[chave]
+            mudou = True
+    return mudou
+
+
 def _modo_busca_valido(valor):
     modo = str(valor or "").strip().lower()
     return modo if modo in ("http", "chrome") else "http"
@@ -1104,6 +1479,15 @@ def carregar_filtros(forcar=False):
             except Exception as e:
                 log_msg(f"⚠️ Não consegui gravar as chaves do modo requisição no filtros.json ({e}). "
                         "Usando os padrões só na memória.")
+        if migrar_alerta_falha(dados):
+            try:
+                _gravar_json(ARQ_FILTROS, dados)
+                mtime = os.path.getmtime(ARQ_FILTROS)
+                log_msg("🚨 filtros.json: alerta de falha adicionado (alerta_falha_min=3, voz e balão "
+                        "ligados). O resto ficou como estava.")
+            except Exception as e:
+                log_msg(f"⚠️ Não consegui gravar as chaves do alerta de falha no filtros.json ({e}). "
+                        "Usando os padrões só na memória.")
         combinado = dict(FILTROS_PADRAO)
         combinado.update({k: v for k, v in dados.items() if not str(k).startswith("_") and v is not None})
         _FILTROS = {
@@ -1160,6 +1544,10 @@ def carregar_filtros(forcar=False):
             "http_ciclos_formato_invalido": _para_int(
                 combinado.get("http_ciclos_formato_invalido"), 3, 1, 100),
             "log_requisicoes": _para_bool(combinado.get("log_requisicoes"), True),
+            "alerta_falha_min": _para_int(combinado.get("alerta_falha_min"), 3, 0, 120),
+            "alerta_falha_repetir_min": _para_int(combinado.get("alerta_falha_repetir_min"), 10, 1, 1440),
+            "alerta_falha_notificar": _para_bool(combinado.get("alerta_falha_notificar"), True),
+            "alerta_falha_voz": _para_bool(combinado.get("alerta_falha_voz"), True),
             "chrome_reinicio_diario_hora": _hora_valida(combinado.get("chrome_reinicio_diario_hora")),
             "chrome_limite_ram_mb": _para_int(combinado.get("chrome_limite_ram_mb"), 1500, 0),
             "chrome_bloquear_imagens": _para_bool(combinado.get("chrome_bloquear_imagens"), False),
@@ -2814,6 +3202,8 @@ def loop_supervisionado():
                 motivo = executar_sessao_chrome()
             except Exception as e:
                 motivo = f"erro inesperado: {type(e).__name__}: {e}"
+                import traceback
+                log_msg("💥 Detalhe do erro inesperado:\n" + texto_seguro_para_log(traceback.format_exc()).rstrip())
             _fechar_chrome()
             if motivo is None or _ENCERRANDO or _CRED_RECUSADAS:
                 break
@@ -5038,6 +5428,7 @@ def gravar_heartbeat():
             # o supervisor usa como reserva: ativo e sem ciclo OK há muito tempo = relança
             "ativo": _ETAPA not in ETAPAS_PAUSADAS,
             "ok_ref_ts": max(_ULTIMO_OK, _MARCO_ATIVO),
+            "ultimo_ok_ts": _ULTIMO_OK,   # 2.3.5: o supervisor sabe se o monitor voltou
             "alarme": bool(alarme_ativo),
         }, indent=None)
         _gravar_json_atomico(ARQ_STATUS, montar_status())
@@ -5091,6 +5482,10 @@ def thread_watchdog():
                     _PEDIDO_RECARGA = True
             ultimo_giro = agora
             _passo_watchdog(agora)
+            try:
+                _checar_alerta_falha(agora)   # antes da escada: o aviso sai antes de um reinício
+            except Exception as e:
+                log_msg(f"⚠️ Watchdog: erro no alerta de falha ({type(e).__name__}: {e})")
             if _checar_cronometro_login(agora):
                 return
             _checar_reinicio_por_falha(agora)
@@ -5184,6 +5579,10 @@ def _atualizar_status(nivel, texto):
 
 def _atualizar_titulo_bandeja():
     nivel, texto = _STATUS
+    if _ALERTA_FALHA["em_falha"]:   # 2.3.5: sem ciclo OK há alerta_falha_min = vermelho com o motivo
+        nivel = "falha"
+        texto = (f"⚠️ Sem funcionar há {_ALERTA_FALHA.get('minutos') or _minutos(time.time() - _ALERTA_FALHA['desde'])} min: "
+                 f"{_ALERTA_FALHA['motivo']}")
     try:
         if tray_icon is not None:
             tray_icon.icon = criar_icone_imagem(CORES_STATUS.get(nivel, "blue"))
@@ -5194,11 +5593,276 @@ def _atualizar_titulo_bandeja():
 
 
 def _avisar_bandeja(mensagem):
+    """Aviso ao usuário: balão acima da bandeja (2.3.5) ou, sem ele, notificação do Windows."""
+    avisar_balao("info", "Monitor de senhas", mensagem)
+
+
+# --- Balão de aviso dentro do monitor (2.3.5) ---------------------------------------
+_BALAO = None   # GerenciadorBalao (criado na thread do Tk logo depois de abrir)
+
+
+def iniciar_balao():
+    """Cria o balão na thread do Tk e liga o giro de 500 ms."""
+    global _BALAO
+    try:
+        janela = JanelaBalao(root, icone_bandeja=lambda: tray_icon)
+        gerenciador = GerenciadorBalao(
+            janela.mostrar, janela.esconder,
+            alarme=lambda: bool(alarme_ativo) or janela_alerta is not None)
+        janela.gerenciador = gerenciador
+        _BALAO = gerenciador
+    except Exception as erro:
+        log_msg(f"⚠️ Balão de aviso indisponível ({type(erro).__name__}) — uso a notificação do Windows.")
+        return
+
+    def girar():
+        try:
+            _BALAO.tick()
+        except Exception as erro:
+            log_msg(f"⚠️ Balão de aviso: {type(erro).__name__}: {erro}")
+        root.after(500, girar)
+    root.after(500, girar)
+
+
+def avisar_balao(tipo, titulo, texto, persistente=False, chave=""):
+    """Balão acima da bandeja (clique abre o painel). Sem balão: notificação do Windows."""
+    if _BALAO is not None:
+        _BALAO.avisar(tipo, titulo, texto, persistente=persistente, chave=chave,
+                      ao_clicar=lambda: gerenciar_janelas("mostrar"))
+        return True
     try:
         if tray_icon is not None and getattr(tray_icon, "HAS_NOTIFICATION", False):
-            tray_icon.notify(mensagem, "Monitor de Senha")
+            tray_icon.notify(f"{texto}", titulo)
     except Exception:
         pass
+    return False
+
+
+def descartar_balao(chave):
+    if _BALAO is not None:
+        _BALAO.descartar(chave)
+
+
+# --- Alerta de falha (2.3.5): o monitor parou / está sem ciclo OK -------------------
+# Sem ciclo OK há alerta_falha_min (3) min = ícone vermelho com o motivo no tooltip,
+# balão "sem funcionar" (fica até clicar ou até voltar), voz opcional; repete no máximo
+# a cada alerta_falha_repetir_min (10). Voltou = balão "voltou a funcionar". O estado
+# passa de um processo para o outro (logs/alerta_falha.json), porque a escada de
+# recuperação reinicia o programa justamente nessa hora.
+ARQ_ALERTA_FALHA = os.path.join(PASTA_LOGS, "alerta_falha.json")
+FRASE_FALHA = "Atenção: o monitor de senhas parou de funcionar"
+ALERTA_HERANCA_SEGUNDOS = 900
+_ALERTA_FALHA = {"em_falha": False, "desde": 0.0, "ultimo_aviso": 0.0, "motivo": "",
+                 "herdado_ref": 0.0, "carregado": False, "reexibir": False}
+
+
+def _carregar_alerta_falha(agora):
+    estado = _ALERTA_FALHA
+    estado["carregado"] = True
+    try:
+        dados = _ler_json(ARQ_ALERTA_FALHA)
+    except Exception:
+        return
+    if not isinstance(dados, dict) or not 0 <= agora - float(dados.get("ts") or 0) <= ALERTA_HERANCA_SEGUNDOS:
+        return
+    estado["herdado_ref"] = float(dados.get("ref") or 0)
+    if dados.get("em_falha"):
+        estado.update(em_falha=True, desde=float(dados.get("desde") or 0),
+                      ultimo_aviso=float(dados.get("ultimo_aviso") or 0),
+                      motivo=str(dados.get("motivo") or "")[:120], reexibir=True)
+
+
+def _gravar_alerta_falha(agora, ref):
+    estado = _ALERTA_FALHA
+    try:
+        _gravar_json_atomico(ARQ_ALERTA_FALHA, {
+            "ts": agora, "pid": os.getpid(), "ref": ref, "em_falha": estado["em_falha"],
+            "desde": estado["desde"], "ultimo_aviso": estado["ultimo_aviso"], "motivo": estado["motivo"]},
+            indent=None)
+    except Exception:
+        pass
+
+
+def _referencia_sem_ok(agora):
+    """Desde quando conta o "sem ciclo OK". Logo depois de um reinício (sem nenhum OK
+    ainda neste processo) vale o do processo anterior, se for recente."""
+    ref = max(_ULTIMO_OK, _MARCO_ATIVO)
+    herdado = _ALERTA_FALHA["herdado_ref"]
+    if herdado and not _ULTIMO_OK and agora - _INICIO_PROCESSO < ALERTA_HERANCA_SEGUNDOS:
+        ref = min(ref, herdado)
+    return ref
+
+
+def _motivo_falha():
+    nivel, texto = _STATUS
+    if _ETAPA == "offline":
+        return "sem internet"
+    if _ETAPA == "aguardando_login":
+        return "aguardando o login do Feegow (confira usuário e senha)"
+    if not _SELENIUM_RODANDO and _MONITOR_DESEJADO:
+        return "o monitoramento parou"
+    if nivel != "ok" and texto:
+        return str(texto).rstrip(".")[:90]
+    return {"login": "entrando no Feegow", "abrindo_chrome": "abrindo o navegador",
+            "reabrindo": "reabrindo o navegador"}.get(_ETAPA, "sem resposta boa do Feegow")
+
+
+def decidir_alerta_falha(cfg, agora, etapa, ref, ultimo_ok, desejado, estado):
+    """'entrar' | 'repetir' | 'manter' | 'voltou' | 'encerrar' | 'nada'."""
+    limite = cfg.get("alerta_falha_min", 3)
+    pausado = not limite or not desejado or etapa == "fora_horario"
+    if estado["em_falha"]:
+        if ultimo_ok > estado["desde"]:
+            return "voltou"
+        if pausado:
+            return "encerrar"
+        if agora - estado["ultimo_aviso"] >= cfg.get("alerta_falha_repetir_min", 10) * 60:
+            return "repetir"
+        return "manter"
+    if pausado:
+        return "nada"
+    return "entrar" if agora - ref >= limite * 60 else "nada"
+
+
+def _minutos(segundos):
+    return max(1, int(segundos // 60))
+
+
+def _falar_alerta_falha(cfg):
+    """Voz do alerta de falha: respeita alerta_voz (geral) e alerta_falha_voz, e nunca
+    fala por cima do alarme de senha (nem espera por ele: se estiver tocando, não fala)."""
+    if not (cfg.get("alerta_voz", True) and cfg.get("alerta_falha_voz", True)):
+        return False
+    if alarme_ativo or _TRAVA_AUDIO.locked():
+        return False
+
+    def tarefa():
+        if not _TRAVA_AUDIO.acquire(blocking=False):
+            return
+        try:
+            if alarme_ativo:
+                return
+            arquivo = obter_audio(FRASE_FALHA)
+            for disp in (dispositivos_de_saida(cfg) if arquivo else []):
+                if alarme_ativo:
+                    break
+                _tocar_audio_sem_trava(disp, arquivo, parar_se_desarmar=False)
+            try:
+                pygame.mixer.quit()
+            except Exception:
+                pass
+        except Exception as erro:
+            log_msg(f"⚠️ Voz do alerta de falha: {type(erro).__name__}")
+        finally:
+            _TRAVA_AUDIO.release()
+    threading.Thread(target=tarefa, name="voz_alerta_falha", daemon=True).start()
+    return True
+
+
+def _emitir_alerta_falha(cfg, agora, voz=True):
+    estado = _ALERTA_FALHA
+    minutos = _minutos(agora - estado["desde"])
+    log_msg(f"⚠️ Monitor de senhas sem funcionar há {minutos} min: {estado['motivo']}. Tentando recuperar...")
+    if cfg.get("alerta_falha_notificar", True):
+        avisar_balao("aviso", f"Monitor de senhas sem funcionar há {minutos} min",
+                     f"{estado['motivo']}. Tentando recuperar...", persistente=True, chave="falha")
+    if voz:
+        _falar_alerta_falha(cfg)
+    estado["ultimo_aviso"] = agora
+
+
+def _checar_alerta_falha(agora):
+    """Chamado pelo watchdog a cada 15 s. Devolve a ação tomada (para os testes)."""
+    cfg = carregar_filtros()
+    estado = _ALERTA_FALHA
+    if not estado["carregado"]:
+        _carregar_alerta_falha(agora)
+    if _ETAPA == "fora_horario":
+        estado["herdado_ref"] = 0.0
+    ref = _referencia_sem_ok(agora)
+    acao = decidir_alerta_falha(cfg, agora, _ETAPA, ref, _ULTIMO_OK, _MONITOR_DESEJADO and not _ENCERRANDO, estado)
+    if acao == "entrar":
+        estado.update(em_falha=True, desde=ref, motivo=_motivo_falha(), reexibir=False)
+        _emitir_alerta_falha(cfg, agora)
+    elif acao == "repetir":
+        estado["motivo"] = _motivo_falha()
+        _emitir_alerta_falha(cfg, agora)
+    elif acao == "manter":
+        estado["motivo"] = _motivo_falha()
+        if estado["reexibir"]:   # o programa reiniciou no meio da falha: o balão volta (sem voz)
+            estado["reexibir"] = False
+            if cfg.get("alerta_falha_notificar", True):
+                avisar_balao("aviso", f"Monitor de senhas sem funcionar há {_minutos(agora - estado['desde'])} min",
+                             f"{estado['motivo']}. Tentando recuperar...", persistente=True, chave="falha")
+    elif acao == "voltou":
+        minutos = _minutos(_ULTIMO_OK - estado["desde"])
+        log_msg(f"✅ Monitor de senhas voltou a funcionar (ficou {minutos} min sem funcionar).")
+        if cfg.get("alerta_falha_notificar", True):
+            avisar_balao("ok", "Monitor de senhas voltou a funcionar",
+                         f"Ficou {minutos} min sem funcionar. Monitorando normalmente.", chave="falha")
+        estado.update(em_falha=False, desde=0.0, ultimo_aviso=0.0, motivo="", reexibir=False)
+    elif acao == "encerrar":
+        log_msg("ℹ️ Alerta de falha encerrado (monitor parado pelo usuário ou fora do horário).")
+        descartar_balao("falha")
+        estado.update(em_falha=False, desde=0.0, ultimo_aviso=0.0, motivo="", reexibir=False)
+    estado["minutos"] = _minutos(agora - estado["desde"]) if estado["em_falha"] else 0
+    _gravar_alerta_falha(agora, ref)
+    _atualizar_titulo_bandeja()
+    return acao
+
+
+# --- Erros não tratados (2.3.5): log com traceback (sem dado sensível) + balão ------
+_RE_JWT_LOG = re.compile(r"eyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]*")
+_RE_EMAIL_LOG = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_RE_SEGREDO_LOG = re.compile(r"(?i)\b(senha|password|token|x-access-token|authorization)(['\"]?\s*[:=]\s*)\S+")
+_ULTIMO_AVISO_ERRO = [0.0]
+
+
+def texto_seguro_para_log(texto):
+    """Tira token/JWT, e-mail, senha e CPF/telefone de um texto (traceback)."""
+    texto = _RE_JWT_LOG.sub("[REDACTED]", str(texto))
+    texto = _RE_SEGREDO_LOG.sub(r"\1\2[REDACTED]", texto)
+    texto = _RE_EMAIL_LOG.sub("[e-mail]", texto)
+    texto = _RE_CPF.sub("***", texto)
+    return _RE_TELEFONE.sub("***", texto)
+
+
+def registrar_erro_nao_tratado(tipo, valor, rastro, onde, agora=None):
+    import traceback
+    agora = agora or time.time()
+    nome = getattr(tipo, "__name__", str(tipo))
+    try:
+        detalhe = "".join(traceback.format_exception(tipo, valor, rastro))
+    except Exception:
+        detalhe = f"{nome}: {valor}"
+    log_msg(f"💥 Erro não tratado em '{onde}' ({nome}):\n{texto_seguro_para_log(detalhe).rstrip()}")
+    if agora - _ULTIMO_AVISO_ERRO[0] < 600:
+        return False
+    _ULTIMO_AVISO_ERRO[0] = agora
+    if carregar_filtros().get("alerta_falha_notificar", True):
+        avisar_balao("erro", "Erro inesperado no monitor de senhas",
+                     f"{nome} em '{onde}'. O monitor segue tentando; o detalhe ficou no log (logs\\monitor.log).")
+    return True
+
+
+def _gancho_erro_thread(args):
+    if args.exc_type is SystemExit:
+        return
+    nome = getattr(args.thread, "name", None) or "thread"
+    registrar_erro_nao_tratado(args.exc_type, args.exc_value, args.exc_traceback, nome)
+
+
+def instalar_ganchos_de_erro():
+    threading.excepthook = _gancho_erro_thread
+    anterior = sys.excepthook
+
+    def gancho_principal(tipo, valor, rastro):
+        if not issubclass(tipo, (KeyboardInterrupt, SystemExit)):
+            registrar_erro_nao_tratado(tipo, valor, rastro, "principal")
+        anterior(tipo, valor, rastro)
+    sys.excepthook = gancho_principal
+    root.report_callback_exception = lambda tipo, valor, rastro: registrar_erro_nao_tratado(
+        tipo, valor, rastro, "janela (Tk)")
 
 
 def _texto_status():
@@ -5626,6 +6290,7 @@ def encerrar_sistema():
     """
     global _ENCERRANDO
     _ENCERRANDO = True
+    _ignorar_erro(lambda: os.remove(ARQ_ALERTA_FALHA))   # encerrado pelo usuário: nada a herdar
     _limpeza_para_sair()
     _liberar_instancia_unica()
     os._exit(0)   # código 0 = "o usuário encerrou": o supervisor para de relançar
@@ -6334,6 +6999,7 @@ for disp in DISPOSITIVOS_AUDIO:
     tk.Button(frame_linha, text="Testar", bg="#444444", fg="white", command=lambda d=disp: threading.Thread(target=gerar_e_tocar_alerta_teste, args=("Teste.", "unico", d), daemon=True).start()).pack(side=tk.RIGHT)
 
 if __name__ == "__main__":
+    instalar_ganchos_de_erro()
     log_msg(f"▶️ Monitor de Senha v{VERSAO} iniciando (pasta: {PASTA_SCRIPT}"
             f"{', supervisionado' if _supervisionado() else ''}).")
     carregar_filtros(forcar=True)
@@ -6354,6 +7020,7 @@ if __name__ == "__main__":
     root.after(300, _drenar_fila_log)
     root.after(100, _drenar_fila_ui)
     root.after(1000, _atualizar_rotulo_status)
+    root.after(1500, iniciar_balao)
 
     try:
         root.mainloop()
