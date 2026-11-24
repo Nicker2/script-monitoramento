@@ -236,7 +236,7 @@ def test_sem_internet_nao_reinicia(estado_limpo, monkeypatch):
     monkeypatch.setattr(m, "_ULTIMO_OK", time.time() - 600)
     monkeypatch.setattr(m, "_MARCO_ETAPA", time.time() - 600)
     monkeypatch.setattr(m, "internet_ok", lambda timeout=5: False)
-    monkeypatch.setattr(m, "reiniciar_processo", lambda motivo, ignorar_limite=False: chamadas.append(motivo))
+    monkeypatch.setattr(m, "reiniciar_processo", lambda motivo, ignorar_limite=False, **_k: chamadas.append(motivo))
     assert m._checar_reinicio_por_falha(time.time()) is False and chamadas == []
 
 
@@ -257,7 +257,7 @@ def test_intervalo_minimo_avisa_uma_vez_e_nao_reinicia(estado_limpo, monkeypatch
     m._gravar_estado_watchdog({"reinicios_processo": [agora - 10]})
     monkeypatch.setattr(m, "_ETAPA", "reabrindo")
     monkeypatch.setattr(m, "_FALHAS_CHROME", [agora - 30] * 3)
-    monkeypatch.setattr(m, "reiniciar_processo", lambda motivo, ignorar_limite=False: chamadas.append(motivo))
+    monkeypatch.setattr(m, "reiniciar_processo", lambda motivo, ignorar_limite=False, **_k: chamadas.append(motivo))
     monkeypatch.setattr(m, "log_msg", lambda texto: logs.append(texto))
     for _ in range(4):
         assert m._checar_reinicio_por_falha(agora) is False
@@ -281,7 +281,7 @@ def test_nao_reinicia_durante_alarme(estado_limpo, monkeypatch):
     chamadas = []
     monkeypatch.setattr(m, "_ETAPA", "reabrindo")
     monkeypatch.setattr(m, "_FALHAS_CHROME", [agora - 30] * 3)
-    monkeypatch.setattr(m, "reiniciar_processo", lambda motivo, ignorar_limite=False: chamadas.append(motivo) or True)
+    monkeypatch.setattr(m, "reiniciar_processo", lambda motivo, ignorar_limite=False, **_k: chamadas.append(motivo) or True)
     monkeypatch.setattr(m, "alarme_ativo", True)
     assert m._checar_reinicio_por_falha(agora) is False and chamadas == []
     trava = m._TRAVA_AUDIO

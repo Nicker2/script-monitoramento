@@ -1,18 +1,18 @@
 {
-  "versao": "2.3.5",
+  "versao": "2.3.6",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "b9f90ea18c82b73b4f5ec6e74da8cf4cbc0270a77b16e3cd6f304d0bad504448",
-  "tamanho": 300217,
+  "sha256": "1f60bb42904b539f3f584f60781af5da27ab8643c6b52f6278a541b7240179ae",
+  "tamanho": 304231,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
-      "sha256": "aa7c2991bc4c112532f1c79d8988cdfa5eb7fc088ae7df6e6751e19079a5d598",
-      "tamanho": 14254
+      "sha256": "52ef01e8ed5e3208ef6af1d46e8631ec814cc777a4dec2c0d3c4860e51577630",
+      "tamanho": 15312
     }
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "Alerta de falha: icone vermelho, balao com setinha acima da bandeja e voz quando o monitor fica sem ciclo OK ha 3 min (ou da erro); aviso de volta; supervisor avisa relancamentos e pede suporte se nao voltar.",
+  "notas": "Balao 'reiniciado apos erro' (com o motivo) mostrado pelo processo novo so quando o reinicio foi por erro; reinicio programado, atualizacao e menu nao avisam; supervisor nao avisa relancamento normal.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "0A+xMpk66HEA36btGRPURQJa64JvktdgIElblvX5u4SQ85TcSmi04rt/22nDlUWNHTc8qF6CUZCwzlIw1q7dBg=="
+  "assinatura": "ZmLsYWTG3uC6BK4zY477w7aC2EBGZQcCCHqe3nMy2NUzgWV4g9lu6zlD082L8bIpXqoNKWO0PyHol6UZJVwNBA=="
 }

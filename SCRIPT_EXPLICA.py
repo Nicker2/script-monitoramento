@@ -56,7 +56,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.3.5"
+VERSAO = "2.3.6"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -489,7 +489,8 @@ BALAO_RAIO = 10
 BALAO_SEGUNDOS = 12                 # some sozinho (os persistentes ficam até clicar)
 BALAO_MAX_PERSISTENTE = 30 * 60     # rede de segurança do balão avulso
 BALAO_COR_CHAVE = (255, 0, 254)     # cor "transparente" da janela (nunca entra no desenho)
-_BALAO_CORES_ICONE = {"aviso": "#f59e0b", "ok": "#16a34a", "erro": "#dc2626", "info": "#2563eb"}
+_BALAO_CORES_ICONE = {"aviso": "#f59e0b", "ok": "#16a34a", "erro": "#dc2626", "info": "#2563eb",
+                      "reinicio": "#0284c7"}
 
 
 def _fonte_balao(negrito, tamanho):
@@ -545,6 +546,14 @@ def _desenhar_icone_balao(tipo, lado):
         if tipo == "ok":
             d.line([(n * 0.28, n * 0.52), (n * 0.44, n * 0.68), (n * 0.74, n * 0.36)], fill=branco,
                    width=traco, joint="curve")
+        elif tipo == "reinicio":   # setas em círculo (🔄)
+            caixa = [n * 0.25, n * 0.25, n * 0.75, n * 0.75]
+            d.arc(caixa, 200, 340, fill=branco, width=traco)
+            d.arc(caixa, 20, 160, fill=branco, width=traco)
+            p = n * 0.11
+            for (cx, cy, sentido) in ((n * 0.735, n * 0.40, 1), (n * 0.265, n * 0.60, -1)):
+                d.polygon([(cx - p, cy - p * 0.2 * sentido), (cx + p, cy - p * 0.2 * sentido),
+                           (cx, cy + p * 1.1 * sentido)], fill=branco)
         elif tipo == "erro":
             d.line([(n * 0.33, n * 0.33), (n * 0.67, n * 0.67)], fill=branco, width=traco)
             d.line([(n * 0.67, n * 0.33), (n * 0.33, n * 0.67)], fill=branco, width=traco)
@@ -674,10 +683,11 @@ class GerenciadorBalao:
         self.visivel = False
         self._trava = threading.Lock()
 
-    def avisar(self, tipo, titulo, texto, persistente=False, chave="", ao_clicar=None):
+    def avisar(self, tipo, titulo, texto, persistente=False, chave="", ao_clicar=None, segundos=None):
         with self._trava:
             self.atual = {"tipo": tipo, "titulo": titulo, "texto": texto, "persistente": persistente,
-                          "chave": chave, "ao_clicar": ao_clicar, "expira": 0.0, "novo": True}
+                          "chave": chave, "ao_clicar": ao_clicar, "expira": 0.0, "novo": True,
+                          "segundos": segundos or self.segundos}
 
     def descartar(self, chave):
         with self._trava:
@@ -716,7 +726,7 @@ class GerenciadorBalao:
         if msg["novo"] or not self.visivel:
             msg["novo"] = False
             if not msg["persistente"] and not msg["expira"]:
-                msg["expira"] = agora + self.segundos
+                msg["expira"] = agora + msg.get("segundos", self.segundos)
             self.visivel = True
             self._mostrar(msg)
 
@@ -4485,7 +4495,7 @@ def _reiniciar_pela_escada(motivo):
                             "offline", "Sem internet — aguardando")
         return False
     log_msg(f"🪜 [N3] Escada de recuperação (modo requisição): {motivo}. Reiniciando o programa inteiro.")
-    return reiniciar_processo(motivo)
+    return reiniciar_processo(motivo, por_erro=True)
 
 
 def _relogar_http(erro, token):
@@ -5032,7 +5042,7 @@ def _checar_reinicio_por_falha(agora):
         return False
     _AVISO_RECUPERACAO = ""
     log_msg(f"🪜 [N3] Escada de recuperação: {motivo}. Reiniciando o programa inteiro.")
-    return reiniciar_processo(motivo)
+    return reiniciar_processo(motivo, por_erro=True)
 
 
 # --- Cronômetro de login (2.3.3) ---------------------------------------------------
@@ -5122,7 +5132,7 @@ def _checar_cronometro_login(agora):
         return False
     limite = cfg.get("login_timeout_seg") or 120
     log_msg(f"⏱️ Login demorou mais de {_texto_duracao(limite)}: reiniciando o programa")
-    if reiniciar_processo(texto):
+    if reiniciar_processo(texto, por_erro=True, curto=f"Login demorou mais de {_texto_duracao(limite)}"):
         return True
     return False
 
@@ -5276,8 +5286,10 @@ def _gravar_estado_watchdog(dados):
         pass
 
 
-def reiniciar_processo(motivo, ignorar_limite=False):
-    """Nível 3: reinicia o programa inteiro (fecha o Chrome, sobe outro processo)."""
+def reiniciar_processo(motivo, ignorar_limite=False, por_erro=False, curto=""):
+    """Nível 3: reinicia o programa inteiro (fecha o Chrome, sobe outro processo).
+    por_erro=True (escada, cronômetro de login, watchdog): o processo novo mostra o
+    balão "reiniciado após erro: <curto>". Programado/atualização/menu: nada."""
     global _ENCERRANDO
     if ignorar_limite:
         _pode_reiniciar_processo()   # registra o horário (o intervalo mínimo conta a partir dele)
@@ -5287,6 +5299,8 @@ def reiniciar_processo(motivo, ignorar_limite=False):
                 f"{REINICIO_INTERVALO_MINIMO_SEGUNDOS} s — tento de novo em ~{faltam} s.")
         return False
     log_msg(f"🔁 [N3] Reiniciando o programa inteiro. Motivo: {motivo}")
+    if por_erro:
+        gravar_aviso_reinicio_erro(curto or motivo_curto_reinicio(motivo))
     _ENCERRANDO = True
     _salvar_pausa()   # a pausa do CIENTE continua valendo no processo novo
     # Antes (2.0.0) _limpeza_para_sair() terminava com os._exit(0): o processo
@@ -5554,7 +5568,8 @@ def _passo_watchdog(agora):
 
     if agora - _HORA_PEDIDO_CHROME > 300:
         # Nem fechando o Chrome a thread voltou: reinicia o programa.
-        if reiniciar_processo(f"monitor travado mesmo após fechar o Chrome ({_PEDIDO_REINICIO_CHROME})"):
+        if reiniciar_processo(f"monitor travado mesmo após fechar o Chrome ({_PEDIDO_REINICIO_CHROME})",
+                              por_erro=True, curto="Monitor travado (sem resposta)"):
             return
         _HORA_PEDIDO_CHROME = agora
 
@@ -5622,13 +5637,73 @@ def iniciar_balao():
             log_msg(f"⚠️ Balão de aviso: {type(erro).__name__}: {erro}")
         root.after(500, girar)
     root.after(500, girar)
+    root.after(800, mostrar_aviso_reinicio_erro)
 
 
-def avisar_balao(tipo, titulo, texto, persistente=False, chave=""):
+# --- Reinício por ERRO (2.3.6): o processo novo mostra o balão ----------------------
+# O processo que reinicia morre logo depois (o balão dele não chegaria a aparecer).
+# Quem reinicia por erro (escada, cronômetro de login, watchdog, supervisor) grava
+# logs/reinicio_erro.json; o processo novo mostra o balão ao subir e apaga o arquivo.
+# Reinício que não é erro (programado, atualização, menu, pedido externo) não grava nada.
+ARQ_REINICIO_ERRO = os.path.join(PASTA_LOGS, "reinicio_erro.json")
+REINICIO_ERRO_VALIDADE = 300   # aviso mais velho que isso (PC desligado no meio) é descartado
+REINICIO_ERRO_SEGUNDOS = 10
+
+
+def motivo_curto_reinicio(motivo):
+    """Motivo do reinício em poucas palavras, para a 2ª linha do balão."""
+    texto = str(motivo or "")
+    baixo = texto.lower()
+    numero = re.search(r"(\d+)\s*x", texto)
+    if "relogin falhou" in baixo:
+        return f"Sessão não voltou após {numero.group(1) if numero else 2} tentativas"
+    if "login demorou" in baixo or "cronômetro de login" in baixo:
+        return "Login demorou mais de 2 min"
+    if "reaberturas do chrome" in baixo:
+        quantas = re.match(r"\s*(\d+)", texto)
+        return f"O navegador caiu {quantas.group(1) if quantas else 3} vezes seguidas"
+    if "travado" in baixo:
+        return "Monitor travado (sem resposta)"
+    minutos = re.search(r"há (\d+) min", texto)
+    segundos = re.search(r"há (\d+) s\b", texto)
+    if minutos or segundos:
+        total = int(minutos.group(1)) if minutos else max(1, int(segundos.group(1)) // 60)
+        return f"{total} min sem resposta do Feegow"
+    return "erro inesperado"
+
+
+def gravar_aviso_reinicio_erro(motivo_curto, origem="monitor"):
+    try:
+        _gravar_json_atomico(ARQ_REINICIO_ERRO, {"ts": time.time(), "motivo": str(motivo_curto)[:120],
+                                                 "origem": origem}, indent=None)
+        return True
+    except Exception:
+        return False
+
+
+def mostrar_aviso_reinicio_erro(agora=None):
+    """Ao subir: se o processo anterior (ou o supervisor) reiniciou por erro, mostra o balão."""
+    agora = agora or time.time()
+    try:
+        dados = _ler_json(ARQ_REINICIO_ERRO)
+    except Exception:
+        return False
+    _ignorar_erro(lambda: os.remove(ARQ_REINICIO_ERRO))
+    if not isinstance(dados, dict) or not 0 <= agora - float(dados.get("ts") or 0) <= REINICIO_ERRO_VALIDADE:
+        return False
+    motivo = str(dados.get("motivo") or "erro inesperado")
+    log_msg(f"🔄 Monitor de senhas reiniciado após erro: {motivo}")
+    if carregar_filtros().get("alerta_falha_notificar", True):
+        avisar_balao("reinicio", "Monitor de senhas reiniciado após erro", motivo,
+                     chave="reinicio", segundos=REINICIO_ERRO_SEGUNDOS)
+    return True
+
+
+def avisar_balao(tipo, titulo, texto, persistente=False, chave="", segundos=None):
     """Balão acima da bandeja (clique abre o painel). Sem balão: notificação do Windows."""
     if _BALAO is not None:
         _BALAO.avisar(tipo, titulo, texto, persistente=persistente, chave=chave,
-                      ao_clicar=lambda: gerenciar_janelas("mostrar"))
+                      ao_clicar=lambda: gerenciar_janelas("mostrar"), segundos=segundos)
         return True
     try:
         if tray_icon is not None and getattr(tray_icon, "HAS_NOTIFICATION", False):

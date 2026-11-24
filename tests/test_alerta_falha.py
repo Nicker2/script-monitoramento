@@ -318,16 +318,22 @@ def test_texto_seguro(monitor):
 
 
 # --- supervisor -------------------------------------------------------------------------------
-def test_supervisor_avisa_sem_repetir_e_pede_suporte(supervisor, monkeypatch):
+def test_supervisor_avisa_sem_repetir_e_pede_suporte(supervisor, monkeypatch, tmp_path):
     baloes = []
     monkeypatch.setattr(supervisor, "mostrar_balao", lambda *a, **k: baloes.append(a) or True)
     monkeypatch.setattr(supervisor, "log", lambda m: None)
     monkeypatch.setattr(supervisor, "_avisos_ligados", lambda: True)
+    monkeypatch.setattr(supervisor, "PASTA_LOGS", str(tmp_path))
+    monkeypatch.setattr(supervisor, "AVISO_REINICIO_ERRO", str(tmp_path / "reinicio_erro.json"))
     t = 10_000.0
-    supervisor.registrar_falha("Ele parou de responder.", agora=t)
-    supervisor.registrar_falha("Ele fechou sozinho (código 1).", agora=t + 60)     # repetido < 10 min
-    assert [b[1] for b in baloes] == ["Monitor de senhas reiniciado"]
-    supervisor.registrar_falha("Ele fechou sozinho (código 1).", agora=t + 120)    # 3ª seguida
+    supervisor.registrar_falha("Monitor travado (sem resposta)", agora=t)
+    # 2.3.6: o supervisor não mostra balão próprio; o monitor novo avisa ao subir
+    assert baloes == []
+    assert json.loads((tmp_path / "reinicio_erro.json").read_text(encoding="utf-8"))["motivo"] == \
+        "Monitor travado (sem resposta)"
+    supervisor.registrar_falha("erro inesperado (o monitor fechou sozinho, código 1)", agora=t + 60)
+    assert baloes == []
+    supervisor.registrar_falha("erro inesperado (o monitor fechou sozinho, código 1)", agora=t + 120)    # 3ª seguida
     assert baloes[-1][:2] == ("erro", "Monitor de senhas não conseguiu voltar") and baloes[-1][3] is True
     supervisor.registrar_volta(agora=t + 200)
     assert baloes[-1][:2] == ("ok", "Monitor de senhas voltou a funcionar")
@@ -378,6 +384,132 @@ def test_supervisor_real_tres_quedas_pede_suporte(tmp_path):
                        capture_output=True, text=True, errors="replace", timeout=120, env=ambiente)
     log = (tmp_path / "logs" / "supervisor.log").read_text(encoding="utf-8")
     assert r.returncode == 0 and contador.read_text() == "4"
-    assert "Aviso ao usuário: Monitor de senhas reiniciado" in log
+    assert "Aviso de reinício por erro para o monitor novo: erro inesperado (o monitor fechou sozinho, código 1)" in log
     assert "Monitor de senhas não conseguiu voltar — avise o suporte" in log
-    assert log.count("Aviso ao usuário: Monitor de senhas reiniciado") == 1   # não repete em 10 min
+    assert log.count("Aviso ao usuário: Monitor de senhas não conseguiu voltar") == 1   # não repete em 10 min
+    assert "reiniciado" not in log.split("Aviso ao usuário:")[-1].split("\n")[0]
+
+
+
+# --- 2.3.6: balão só quando o reinício é por ERRO ------------------------------------------
+@pytest.fixture
+def rein(monitor, monkeypatch, tmp_path):
+    caminho = tmp_path / "reinicio_erro.json"
+    monkeypatch.setattr(monitor, "ARQ_REINICIO_ERRO", str(caminho))
+    monkeypatch.setattr(monitor, "ARQ_ESTADO_WATCHDOG", str(tmp_path / "watchdog_estado.json"))
+    monkeypatch.setattr(monitor, "_limpeza_para_sair", lambda: None)
+    monkeypatch.setattr(monitor, "_salvar_pausa", lambda: None)
+    relancou = []
+    monkeypatch.setattr(monitor, "relancar_processo_agora", lambda: relancou.append(1))
+    monkeypatch.setattr(monitor, "_ENCERRANDO", False)
+    monkeypatch.setattr(monitor, "alarme_ativo", False)
+    monkeypatch.setattr(monitor, "internet_ok", lambda timeout=5: True)
+    monkeypatch.setattr(monitor, "log_msg", lambda m: None)
+    monkeypatch.setattr(monitor, "_ultimo_reinicio_processo", lambda agora=None: 0.0)
+    return {"arq": caminho, "relancou": relancou}
+
+
+def _motivo_gravado(rein):
+    return json.loads(rein["arq"].read_text(encoding="utf-8"))["motivo"] if rein["arq"].exists() else None
+
+
+@pytest.mark.parametrize("chamar, esperado", [
+    (lambda m: m._reiniciar_pela_escada("relogin falhou 2x seguidas no modo requisição"),
+     "Sessão não voltou após 2 tentativas"),
+    (lambda m: m._reiniciar_pela_escada("modo requisição sem resposta boa há 185 s"),
+     "3 min sem resposta do Feegow"),
+    (lambda m: m.reiniciar_processo("monitor travado mesmo após fechar o Chrome (x)", por_erro=True,
+                                    curto="Monitor travado (sem resposta)"),
+     "Monitor travado (sem resposta)"),
+])
+def test_reinicio_por_erro_grava_o_aviso(monitor, rein, chamar, esperado):
+    assert chamar(monitor) is True and rein["relancou"] == [1]
+    assert _motivo_gravado(rein) == esperado
+
+
+def test_escada_e_cronometro_gravam(monitor, rein, monkeypatch):
+    monkeypatch.setattr(monitor, "decidir_reinicio_por_falha",
+                        lambda *a, **k: ("reiniciar", "monitorando sem nenhum ciclo OK há 4 min"))
+    monkeypatch.setattr(monitor, "_reinicio_bloqueado_ate", lambda agora=None: 0.0)
+    assert monitor._checar_reinicio_por_falha(time.time()) is True
+    assert _motivo_gravado(rein) == "4 min sem resposta do Feegow"
+    rein["arq"].unlink()
+    monkeypatch.setattr(monitor, "_ENCERRANDO", False)   # o 1º reinício (gravador) marcou encerrando
+    monkeypatch.setattr(monitor, "decidir_cronometro_login", lambda *a, **k: ("reiniciar", "login travado"))
+    monkeypatch.setattr(monitor, "_LOGIN_INICIO", time.time() - 300)
+    assert monitor._checar_cronometro_login(time.time()) is True
+    assert _motivo_gravado(rein) == "Login demorou mais de 2 min"
+
+
+@pytest.mark.parametrize("motivo", ["reinicio programado (60 min)", "atualização 2.3.5 -> 2.3.6",
+                                    "pedido do usuário (bandeja)", "pedido externo (logs/reiniciar.pedido)",
+                                    "rollback da atualização"])
+def test_reinicio_normal_nao_avisa(monitor, rein, motivo):
+    assert monitor.reiniciar_processo(motivo, ignorar_limite=True) is True
+    assert rein["relancou"] == [1] and not rein["arq"].exists()
+
+
+def test_reinicio_programado_pelo_watchdog_nao_avisa(monitor, rein, monkeypatch):
+    monkeypatch.setattr(monitor, "decidir_reinicio_programado",
+                        lambda *a, **k: ("reiniciar", "reinicio programado (60 min)"))
+    assert monitor._checar_reinicio_programado(time.time()) is True
+    assert rein["relancou"] == [1] and not rein["arq"].exists()
+
+
+def test_processo_novo_mostra_o_balao_e_apaga(monitor, rein, monkeypatch):
+    baloes = []
+    monkeypatch.setattr(monitor, "avisar_balao", lambda *a, **k: baloes.append((a, k)))
+    assert monitor.mostrar_aviso_reinicio_erro() is False and baloes == []     # sem arquivo
+    monitor.gravar_aviso_reinicio_erro("Sessão não voltou após 2 tentativas")
+    assert monitor.mostrar_aviso_reinicio_erro() is True
+    (tipo, titulo, texto), extra = baloes[0]
+    assert (tipo, texto) == ("reinicio", "Sessão não voltou após 2 tentativas")
+    assert "reiniciado após erro" in titulo and extra["segundos"] == 10
+    assert not rein["arq"].exists()
+    # aviso velho (PC desligado no meio) é descartado
+    monitor.gravar_aviso_reinicio_erro("x")
+    assert monitor.mostrar_aviso_reinicio_erro(agora=time.time() + 3600) is False and len(baloes) == 1
+
+
+def test_motivo_curto(monitor):
+    m = monitor.motivo_curto_reinicio
+    assert m("relogin falhou 3x seguidas no modo requisição") == "Sessão não voltou após 3 tentativas"
+    assert m("3 reaberturas do Chrome seguidas sem nenhum ciclo OK (em 10 min)") == "O navegador caiu 3 vezes seguidas"
+    assert m("sem nenhum ciclo OK há 11 min (etapa 'login')") == "11 min sem resposta do Feegow"
+    assert m("qualquer coisa") == "erro inesperado"
+
+
+def test_balao_com_tempo_proprio(ger):
+    g = ger["g"]
+    g.avisar("reinicio", "reiniciado", "x", segundos=10)
+    g.tick(100)
+    g.tick(109.9)
+    assert g.atual is not None
+    g.tick(110.1)
+    assert g.atual is None
+
+
+def test_desenho_icone_reinicio(monitor):
+    img, geo = monitor.desenhar_balao("reinicio", "🔄 Monitor de senhas reiniciado após erro", "Login demorou mais de 2 min")
+    assert geo["altura"] > 50
+
+
+def test_supervisor_relancamento_normal_nao_avisa(tmp_path):
+    import shutil
+    shutil.copy(os.path.join(RAIZ, "iniciar_monitor.pyw"), tmp_path)
+    contador = tmp_path / "contador.txt"
+    (tmp_path / "SCRIPT_EXPLICA.py").write_text(textwrap.dedent(f"""
+        import os, sys
+        c = r'{contador}'
+        n = int(open(c).read()) if os.path.exists(c) else 0
+        open(c, 'w').write(str(n + 1))
+        sys.exit(75 if n < 2 else 0)
+    """), encoding="utf-8")
+    ambiente = dict(os.environ, MONITOR_SUP_SEM_BALAO="1")
+    ambiente.pop("MONITOR_SUPERVISOR", None)
+    r = subprocess.run([sys.executable, str(tmp_path / "iniciar_monitor.pyw"), "--console"],
+                       capture_output=True, text=True, errors="replace", timeout=60, env=ambiente)
+    log = (tmp_path / "logs" / "supervisor.log").read_text(encoding="utf-8")
+    assert r.returncode == 0 and contador.read_text() == "3"
+    assert not (tmp_path / "logs" / "reinicio_erro.json").exists()
+    assert "Aviso" not in log

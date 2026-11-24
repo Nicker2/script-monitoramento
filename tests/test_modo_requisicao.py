@@ -103,7 +103,7 @@ def amb(monitor, monkeypatch, tmp_path, api):
         ev["tokens_pedidos"].append(evitar)
         return ev["novo_token"].pop(0) if ev["novo_token"] else ""
 
-    def reiniciar(motivo, ignorar_limite=False):
+    def reiniciar(motivo, ignorar_limite=False, **_k):
         ev["reinicios"].append(motivo)
         monkeypatch.setattr(monitor, "_ENCERRANDO", True)
         return True

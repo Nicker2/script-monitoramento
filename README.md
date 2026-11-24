@@ -244,7 +244,7 @@ Criado na primeira execução a partir do [`credenciais.exemplo.json`](credencia
 **Topo do painel:**
 
 ```
-● Conectado | último OK há 8s | v2.3.5
+● Conectado | último OK há 8s | v2.3.6
 ```
 
 **Linhas do `logs/monitor.log`** (um `🔎` por ticket do modal; as listas aparecem normalizadas, sem acento nem hífen):

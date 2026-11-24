@@ -11,10 +11,12 @@ Duplo clique (roda com pythonw.exe, sem janela de console). Ele:
     "ativo" sem nenhum ciclo OK há mais de 30 min (e sem alarme tocando) = relança;
   * sem teto de relançamentos forçados por hora (2.3.3): só um intervalo mínimo de
     30 s entre um e o próximo, para não virar laço apertado;
-  * avisa o usuário num balão acima da bandeja (2.3.5) quando precisa matar/relançar
-    o monitor e quando ele não volta depois de 2 relançamentos seguidos ("avise o
-    suporte"); no máximo 1 aviso igual a cada 10 min; alerta_falha_notificar=false
-    no filtros.json desliga;
+  * relançamento por ERRO (travado, sem ciclo OK, caiu sozinho) grava
+    logs/reinicio_erro.json e o monitor novo mostra o balão "reiniciado após erro"
+    ao subir (2.3.6); relançamento normal (código 75: programado, atualização, menu)
+    não avisa nada. Se o monitor não volta depois de 2 relançamentos seguidos, o
+    próprio supervisor mostra "não conseguiu voltar — avise o suporte" (no máximo
+    1 vez a cada 10 min); alerta_falha_notificar=false no filtros.json desliga;
   * grava tudo em logs/supervisor.log (com rotação) e não roda duas vezes.
 
 A atualização pelo GitHub, o watchdog do navegador e o log do monitor ficam
@@ -37,6 +39,7 @@ PASTA_LOGS = os.path.join(PASTA, "logs")
 LOG = os.path.join(PASTA_LOGS, "supervisor.log")
 
 HEARTBEAT = os.path.join(PASTA_LOGS, "heartbeat.json")
+AVISO_REINICIO_ERRO = os.path.join(PASTA_LOGS, "reinicio_erro.json")   # lido pelo monitor novo
 FILTROS = os.path.join(PASTA, "filtros.json")
 
 CODIGO_REINICIAR = 75
@@ -126,9 +129,28 @@ def avisar(chave, tipo, titulo, texto, persistente=False, agora=None):
     return True
 
 
+def gravar_aviso_reinicio_erro(motivo, agora=None):
+    """O monitor novo mostra "reiniciado após erro: <motivo>" ao subir (o balão do
+    processo velho não chegaria a aparecer)."""
+    try:
+        os.makedirs(PASTA_LOGS, exist_ok=True)
+        temporario = AVISO_REINICIO_ERRO + ".tmp"
+        with open(temporario, "w", encoding="utf-8") as arquivo:
+            json.dump({"ts": agora or time.time(), "motivo": motivo, "origem": "supervisor"}, arquivo,
+                      ensure_ascii=False)
+        os.replace(temporario, AVISO_REINICIO_ERRO)
+        log(f"Aviso de reinício por erro para o monitor novo: {motivo}")
+        return True
+    except Exception as e:
+        log(f"Não consegui gravar o aviso de reinício: {e}")
+        return False
+
+
 def registrar_falha(descricao, agora=None):
-    """Queda ou morte forçada do monitor: avisa; na 3ª seguida sem voltar, pede suporte."""
+    """Queda ou morte forçada do monitor (erro): o monitor novo avisa ao subir; na 3ª
+    seguida sem voltar, o supervisor pede suporte."""
     _FALHAS["seguidas"] += 1
+    gravar_aviso_reinicio_erro(descricao, agora)
     if _FALHAS["seguidas"] >= FALHAS_PARA_SUPORTE:
         log("Monitor de senhas não conseguiu voltar — avise o suporte "
             f"({_FALHAS['seguidas']} falhas seguidas, a última: {descricao}).")
@@ -136,8 +158,7 @@ def registrar_falha(descricao, agora=None):
         return avisar("nao_voltou", "erro", "Monitor de senhas não conseguiu voltar",
                       "Avise o suporte. O supervisor continua tentando reabrir o monitor.",
                       persistente=True, agora=agora)
-    return avisar("relancou", "aviso", "Monitor de senhas reiniciado",
-                  f"{descricao} O supervisor está reabrindo o monitor.", agora=agora)
+    return False
 
 
 def registrar_volta(agora=None):
@@ -267,8 +288,8 @@ def esperar_monitor(processo, inicio):
                       f"{LIMITE_SEM_OK // 60} min — a recuperação interna não resolveu.")
         if motivo and pode_forcar_reinicio(agora):
             log(motivo + " Encerrando o processo e relançando.")
-            registrar_falha("Ele parou de responder" if "heartbeat" in motivo
-                            else "Ele ficou muito tempo sem conseguir monitorar.", agora)
+            registrar_falha("Monitor travado (sem resposta)" if "heartbeat" in motivo
+                            else f"{LIMITE_SEM_OK // 60} min sem conseguir monitorar", agora)
             matar_arvore(processo.pid)
             try:
                 processo.wait(timeout=30)
@@ -320,7 +341,7 @@ def main():
         espera = min(ESPERA_BASE * (2 ** max(0, quedas_rapidas - 1)), ESPERA_MAXIMA)
         log(f"O monitor caiu (código {codigo}, rodou {int(duracao)}s). Relançando em {espera}s.")
         if codigo != CODIGO_MORTO_POR_HEARTBEAT:
-            registrar_falha(f"Ele fechou sozinho (código {codigo}).")
+            registrar_falha(f"erro inesperado (o monitor fechou sozinho, código {codigo})")
         time.sleep(espera)
 
 

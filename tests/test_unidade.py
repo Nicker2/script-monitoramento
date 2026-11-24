@@ -257,7 +257,7 @@ def test_reinicio_programado_regra(monitor):
 
 def test_reinicio_programado_usa_reiniciar_processo(monitor, monkeypatch, tmp_path):
     chamadas = []
-    monkeypatch.setattr(monitor, "reiniciar_processo", lambda motivo, ignorar_limite=False:
+    monkeypatch.setattr(monitor, "reiniciar_processo", lambda motivo, ignorar_limite=False, **_k:
                         chamadas.append((motivo, ignorar_limite)))
     monkeypatch.setattr(monitor, "carregar_filtros", lambda forcar=False: dict(
         monitor.FILTROS_PADRAO, reiniciar_a_cada_min=60))

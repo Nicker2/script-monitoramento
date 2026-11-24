@@ -2,6 +2,14 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.3.6 — balão "reiniciado após erro" (só em erro)
+
+- **Reinício por erro avisa:** escada de recuperação, cronômetro de login, watchdog com o monitor travado e supervisor matando/relançando (heartbeat parado, sem ciclo OK, queda por erro não tratado) gravam `logseinicio_erro.json` logo antes; o **processo novo** mostra ao subir o balão 🔄 "Monitor de senhas reiniciado após erro" com o motivo curto (*Sessão não voltou após 2 tentativas*, *Login demorou mais de 2 min*, *3 min sem resposta do Feegow*, *Monitor travado (sem resposta)*, *erro inesperado*), que some em ~10 s. Assim a pessoa vê o aviso mesmo com o processo antigo morrendo na hora.
+- **Reinício normal não avisa nada:** programado de 60 min, atualização/rollback, **Reiniciar monitor** do menu, pedido externo, reinício diário do Chrome, sessão reaproveitada.
+- **Supervisor revisado:** não mostra mais balão próprio de "reiniciado" (nem em relançamento normal, código 75); em erro, deixa o aviso para o monitor novo. Continua mostrando "não conseguiu voltar — avise o suporte" depois de 2 relançamentos sem voltar.
+- Balão com tempo próprio por mensagem e ícone novo de reinício. Testes novos em `tests/test_alerta_falha.py` (reinício por erro → aviso; programado/atualização/menu/pedido externo → nada; processo novo mostra e apaga; supervisor em relançamento normal não avisa).
+- Publicada só como `.py`, com o ZIP `MonitorSenhas-2.3.6-python.zip` na release.
+
 ### v2.3.5 — alerta para o usuário quando o monitor para ou dá erro
 
 - **Ícone da bandeja por estado:** verde = monitorando OK; amarelo = recuperando/relogando; **vermelho** = sem ciclo OK há `alerta_falha_min` (padrão 3 min), com o motivo no tooltip.
