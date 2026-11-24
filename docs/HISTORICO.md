@@ -2,6 +2,12 @@
 
 > Voltar para o [README](../README.md).
 
+### v2.3.7 — confirma que voltou depois de um reinício por erro
+
+- Depois de um reinício por erro, o processo novo fica aguardando confirmação: no **primeiro ciclo OK** mostra o balão ✅ "Monitor de senhas voltou a funcionar" com *Reiniciado após erro: <motivo> — monitorando normalmente* (some em ~8 s) e loga. Antes, se o reinício acontecia antes de 3 min sem OK (ex.: login > 2 min, relogin falhou 2x), nada confirmava a volta.
+- Sem ciclo OK em `alerta_falha_min`, segue o alerta de falha já existente (que avisa a volta, sem duplicar). Reinícios normais não mostram "voltou". O aviso é lido logo ao abrir, antes do primeiro ciclo (com a sessão reaproveitada o OK chega em ~1 s).
+- Testes novos em `tests/test_alerta_falha.py`. Publicada só como `.py` (ZIP `MonitorSenhas-2.3.7-python.zip` na release).
+
 ### v2.3.6 — balão "reiniciado após erro" (só em erro)
 
 - **Reinício por erro avisa:** escada de recuperação, cronômetro de login, watchdog com o monitor travado e supervisor matando/relançando (heartbeat parado, sem ciclo OK, queda por erro não tratado) gravam `logseinicio_erro.json` logo antes; o **processo novo** mostra ao subir o balão 🔄 "Monitor de senhas reiniciado após erro" com o motivo curto (*Sessão não voltou após 2 tentativas*, *Login demorou mais de 2 min*, *3 min sem resposta do Feegow*, *Monitor travado (sem resposta)*, *erro inesperado*), que some em ~10 s. Assim a pessoa vê o aviso mesmo com o processo antigo morrendo na hora.

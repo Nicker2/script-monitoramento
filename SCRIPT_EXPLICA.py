@@ -56,7 +56,7 @@ if sys.stderr is None:
 #    Os ajustes do dia a dia (senhas, alertas, watchdog, atualização) ficam no
 #    filtros.json / janela ⚙️ Configurações. Aqui fica só o que é do programa.
 # ==============================================================================
-VERSAO = "2.3.6"
+VERSAO = "2.3.7"
 MARCADOR_SCRIPT = "# MONITOR-FEEGOW-SCRIPT"     # o arquivo baixado precisa começar com isto
 REPO_GITHUB = "Nicker2/script-monitoramento"
 CANAL_ATUALIZACAO_PADRAO = "main"               # branch do GitHub consultada
@@ -5157,6 +5157,8 @@ def registrar_batimento(ok=True):
     _ULTIMO_PROGRESSO = agora
     if ok:
         _ULTIMO_OK = agora
+        if _REINICIO_ERRO["aguardando"]:
+            confirmar_volta_apos_reinicio()
         if _LOGIN_INICIO:
             parar_cronometro_login()   # ciclo OK: está logado (rede de segurança do cronômetro)
         if _FALHAS_CHROME:
@@ -5681,8 +5683,14 @@ def gravar_aviso_reinicio_erro(motivo_curto, origem="monitor"):
         return False
 
 
-def mostrar_aviso_reinicio_erro(agora=None):
-    """Ao subir: se o processo anterior (ou o supervisor) reiniciou por erro, mostra o balão."""
+REINICIO_VOLTOU_SEGUNDOS = 8
+# 2.3.7: reiniciou por erro = "aguardando confirmação" até o primeiro ciclo OK, que
+# mostra "voltou a funcionar". Sem ciclo OK em alerta_falha_min, vale o alerta de falha.
+_REINICIO_ERRO = {"motivo": "", "aguardando": False, "mostrado": False, "ok_antes": False}
+
+
+def carregar_aviso_reinicio_erro(agora=None):
+    """Logo ao abrir (antes do primeiro ciclo): lê e apaga logs/reinicio_erro.json."""
     agora = agora or time.time()
     try:
         dados = _ler_json(ARQ_REINICIO_ERRO)
@@ -5692,10 +5700,47 @@ def mostrar_aviso_reinicio_erro(agora=None):
     if not isinstance(dados, dict) or not 0 <= agora - float(dados.get("ts") or 0) <= REINICIO_ERRO_VALIDADE:
         return False
     motivo = str(dados.get("motivo") or "erro inesperado")
-    log_msg(f"🔄 Monitor de senhas reiniciado após erro: {motivo}")
+    _REINICIO_ERRO.update(motivo=motivo, aguardando=True, mostrado=False, ok_antes=False)
+    log_msg(f"🔄 Monitor de senhas reiniciado após erro: {motivo} (aguardando o primeiro ciclo OK)")
+    return True
+
+
+def _balao_voltou_apos_reinicio():
+    motivo = _REINICIO_ERRO["motivo"]
+    log_msg(f"✅ Monitor de senhas voltou a funcionar (reiniciado após erro: {motivo}).")
     if carregar_filtros().get("alerta_falha_notificar", True):
-        avisar_balao("reinicio", "Monitor de senhas reiniciado após erro", motivo,
+        avisar_balao("ok", "Monitor de senhas voltou a funcionar",
+                     f"Reiniciado após erro: {motivo} — monitorando normalmente",
+                     chave="reinicio", segundos=REINICIO_VOLTOU_SEGUNDOS)
+
+
+def mostrar_aviso_reinicio_erro():
+    """Na thread do Tk, logo depois de criar o balão: "reiniciado após erro" (ou já o
+    "voltou", se o primeiro ciclo OK chegou antes do balão existir)."""
+    if not _REINICIO_ERRO["motivo"] or _REINICIO_ERRO["mostrado"]:
+        return False
+    _REINICIO_ERRO["mostrado"] = True
+    if _REINICIO_ERRO["ok_antes"]:
+        _balao_voltou_apos_reinicio()
+        return True
+    if carregar_filtros().get("alerta_falha_notificar", True):
+        avisar_balao("reinicio", "Monitor de senhas reiniciado após erro", _REINICIO_ERRO["motivo"],
                      chave="reinicio", segundos=REINICIO_ERRO_SEGUNDOS)
+    return True
+
+
+def confirmar_volta_apos_reinicio():
+    """Primeiro ciclo OK depois de um reinício por erro. Se o alerta de falha já entrou,
+    é ele quem mostra o "voltou" (não duplica)."""
+    if not _REINICIO_ERRO["aguardando"]:
+        return False
+    _REINICIO_ERRO["aguardando"] = False
+    if _ALERTA_FALHA["em_falha"]:
+        return False
+    if not _REINICIO_ERRO["mostrado"]:
+        _REINICIO_ERRO["ok_antes"] = True   # o balão ainda não existe: mostrar_aviso... mostra o "voltou"
+        return True
+    _balao_voltou_apos_reinicio()
     return True
 
 
@@ -7078,6 +7123,7 @@ if __name__ == "__main__":
     log_msg(f"▶️ Monitor de Senha v{VERSAO} iniciando (pasta: {PASTA_SCRIPT}"
             f"{', supervisionado' if _supervisionado() else ''}).")
     carregar_filtros(forcar=True)
+    carregar_aviso_reinicio_erro()   # antes do primeiro ciclo (2.3.7: confirma a volta no 1º OK)
     restaurar_pausa()
     carregar_credenciais()
     pregerar_audios_em_segundo_plano()   # fora da thread principal (não trava a abertura)

@@ -456,19 +456,74 @@ def test_reinicio_programado_pelo_watchdog_nao_avisa(monitor, rein, monkeypatch)
     assert rein["relancou"] == [1] and not rein["arq"].exists()
 
 
-def test_processo_novo_mostra_o_balao_e_apaga(monitor, rein, monkeypatch):
-    baloes = []
+@pytest.fixture
+def volta(monitor, rein, monkeypatch):
+    baloes, logs = [], []
     monkeypatch.setattr(monitor, "avisar_balao", lambda *a, **k: baloes.append((a, k)))
-    assert monitor.mostrar_aviso_reinicio_erro() is False and baloes == []     # sem arquivo
+    monkeypatch.setattr(monitor, "log_msg", logs.append)
+    monkeypatch.setattr(monitor, "_REINICIO_ERRO", {"motivo": "", "aguardando": False, "mostrado": False,
+                                                    "ok_antes": False})
+    monkeypatch.setattr(monitor, "_ALERTA_FALHA", dict(monitor._ALERTA_FALHA, em_falha=False))
+    monkeypatch.setattr(monitor, "_FALHAS_CHROME", [])
+    monkeypatch.setattr(monitor, "_PRIMEIRO_OK", True)
+    monkeypatch.setattr(monitor, "_LOGIN_INICIO", 0.0)
+    monkeypatch.setattr(monitor, "gravar_heartbeat", lambda: None)
+    return {"baloes": baloes, "logs": logs}
+
+
+def test_processo_novo_mostra_o_balao_e_apaga(monitor, rein, volta):
+    assert monitor.carregar_aviso_reinicio_erro() is False                       # sem arquivo
+    assert monitor.mostrar_aviso_reinicio_erro() is False and volta["baloes"] == []
     monitor.gravar_aviso_reinicio_erro("Sessão não voltou após 2 tentativas")
+    assert monitor.carregar_aviso_reinicio_erro() is True and not rein["arq"].exists()
     assert monitor.mostrar_aviso_reinicio_erro() is True
-    (tipo, titulo, texto), extra = baloes[0]
+    (tipo, titulo, texto), extra = volta["baloes"][0]
     assert (tipo, texto) == ("reinicio", "Sessão não voltou após 2 tentativas")
     assert "reiniciado após erro" in titulo and extra["segundos"] == 10
-    assert not rein["arq"].exists()
     # aviso velho (PC desligado no meio) é descartado
     monitor.gravar_aviso_reinicio_erro("x")
-    assert monitor.mostrar_aviso_reinicio_erro(agora=time.time() + 3600) is False and len(baloes) == 1
+    assert monitor.carregar_aviso_reinicio_erro(agora=time.time() + 3600) is False
+
+
+def test_primeiro_ciclo_ok_confirma_a_volta(monitor, rein, volta):
+    monitor.gravar_aviso_reinicio_erro("Login demorou mais de 2 min")
+    monitor.carregar_aviso_reinicio_erro()
+    monitor.mostrar_aviso_reinicio_erro()
+    monitor.registrar_batimento(ok=False)                 # espera de propósito: não confirma
+    assert len(volta["baloes"]) == 1
+    monitor.registrar_batimento(ok=True)
+    (tipo, titulo, texto), extra = volta["baloes"][-1]
+    assert (tipo, titulo) == ("ok", "Monitor de senhas voltou a funcionar")
+    assert texto == "Reiniciado após erro: Login demorou mais de 2 min — monitorando normalmente"
+    assert extra["segundos"] == 8
+    assert any(l.startswith("✅ Monitor de senhas voltou a funcionar (reiniciado após erro") for l in volta["logs"])
+    monitor.registrar_batimento(ok=True)                  # só no PRIMEIRO ciclo OK
+    assert len(volta["baloes"]) == 2
+
+
+def test_ok_antes_do_balao_existir_mostra_o_voltou(monitor, rein, volta):
+    monitor.gravar_aviso_reinicio_erro("Monitor travado (sem resposta)")
+    monitor.carregar_aviso_reinicio_erro()
+    monitor.registrar_batimento(ok=True)                  # sessão reaproveitada: OK em 1 s
+    assert volta["baloes"] == []
+    monitor.mostrar_aviso_reinicio_erro()                 # o balão acabou de ser criado
+    assert [b[0][0] for b in volta["baloes"]] == ["ok"]
+
+
+def test_reinicio_normal_nao_mostra_voltou(monitor, rein, volta):
+    assert monitor.carregar_aviso_reinicio_erro() is False   # programado/atualização/menu não gravam
+    monitor.mostrar_aviso_reinicio_erro()
+    monitor.registrar_batimento(ok=True)
+    assert volta["baloes"] == []
+
+
+def test_em_falha_quem_avisa_e_o_alerta_de_falha(monitor, rein, volta, monkeypatch):
+    monitor.gravar_aviso_reinicio_erro("3 min sem resposta do Feegow")
+    monitor.carregar_aviso_reinicio_erro()
+    monitor.mostrar_aviso_reinicio_erro()
+    monkeypatch.setitem(monitor._ALERTA_FALHA, "em_falha", True)
+    monitor.registrar_batimento(ok=True)
+    assert [b[0][0] for b in volta["baloes"]] == ["reinicio"]   # sem "voltou" duplicado
 
 
 def test_motivo_curto(monitor):

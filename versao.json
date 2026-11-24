@@ -1,9 +1,9 @@
 {
-  "versao": "2.3.6",
+  "versao": "2.3.7",
   "canal": "main",
   "arquivo": "SCRIPT_EXPLICA.py",
-  "sha256": "1f60bb42904b539f3f584f60781af5da27ab8643c6b52f6278a541b7240179ae",
-  "tamanho": 304231,
+  "sha256": "3c8f8007dc8175182e526d8a9a2dff5e8d30303a95a6f838bd9299e6443a1d9b",
+  "tamanho": 306294,
   "arquivos_extras": {
     "iniciar_monitor.pyw": {
       "sha256": "52ef01e8ed5e3208ef6af1d46e8631ec814cc777a4dec2c0d3c4860e51577630",
@@ -12,7 +12,7 @@
   },
   "url_exe": "https://github.com/Nicker2/script-monitoramento/releases/latest/download/MonitorFeegow.exe",
   "sha256_exe": "",
-  "notas": "Balao 'reiniciado apos erro' (com o motivo) mostrado pelo processo novo so quando o reinicio foi por erro; reinicio programado, atualizacao e menu nao avisam; supervisor nao avisa relancamento normal.",
+  "notas": "Depois de um reinicio por erro, o primeiro ciclo OK mostra o balao 'voltou a funcionar' com o motivo; reinicios normais nao mostram nada.",
   "chave": "17a321dda4aa1060",
-  "assinatura": "ZmLsYWTG3uC6BK4zY477w7aC2EBGZQcCCHqe3nMy2NUzgWV4g9lu6zlD082L8bIpXqoNKWO0PyHol6UZJVwNBA=="
+  "assinatura": "r7I4TkLgXw2Wbv/1bMZZ0r7jWf+fL7AVQ6FQ6egbVM27g49xYa3f+oB1k5KZ7JN4nb6s/5+UUfh5kOJunDYgBA=="
 }
